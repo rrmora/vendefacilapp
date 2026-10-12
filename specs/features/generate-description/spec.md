@@ -1,7 +1,7 @@
 # Especificación funcional — Generar descripción
 
 **Feature:** generate-description
-**Fase actual:** Fase 1 (Scaffolding, endpoint MOCK)
+**Fase actual:** Fase 3 (Arquitectura de IA completada, llamadas reales deshabilitadas)
 **Contrato público:** `src/types/description.ts`
 
 ## 1. Objetivo
@@ -79,7 +79,33 @@ implementar cuotas (Fase 4).
 - [x] Pruebas unitarias del endpoint pasan con Vitest.
 - [x] `pnpm lint`, `pnpm typecheck`, `pnpm test` y `pnpm build` pasan.
 
-## 8. Fuera de alcance en Fase 1
+## 8. Estado de Fase 3 — Arquitectura de IA
 
-Cuotas, rate limiting, presupuesto, proveedores reales, UI del formulario
-(Fase 2), PWA (Fase 5).
+### 8.1 Adaptadores implementados
+
+| Proveedor | Modelo predeterminado | Estado |
+|-----------|----------------------|--------|
+| Gemini | gemini-2.5-flash | Implementado, deshabilitado |
+| Groq | llama-3.3-70b-versatile | Implementado, deshabilitado; modelo en revisión |
+| OpenAI | gpt-4o-mini | Implementado, deshabilitado |
+
+### 8.2 Protecciones activas
+
+- **AI_ENABLED=false** (default): desactiva toda la cadena de IA.
+- **realCallsAuthorized=false** (flag interno en código): segunda
+  protección independiente. Sin autorización, el endpoint responde
+  503 INTERNAL_ERROR sin contactar proveedores.
+- Endpoint /api/generate conserva respuesta MOCK cuando AI está deshabilitado.
+
+### 8.3 Contratos públicos
+
+Intactos. IDescriptionRequest/IDescriptionResponse sin cambios.
+
+### 8.4 Pendiente
+
+- Revisión del modelo predeterminado de Groq (llama-3.3-70b-versatile
+  en estado "Enterprise" con "Contact Sales"; indicios de deprecación).
+
+## 9. Fuera de alcance en Fase 3
+
+Cuotas, rate limiting, presupuesto (Fase 4), PWA (Fase 5).

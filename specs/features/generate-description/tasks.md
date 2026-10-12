@@ -32,35 +32,40 @@ aceptación, validaciones.
 - **Dependencias:** T-002.
 - **Validaciones:** lint, typecheck, unitarias, build, E2E básico.
 
-## T-004 — Adaptadores y orquestador de IA (Fase 3)
+## T-003A — Arquitectura de proveedores de IA (Fase 3) ✅ completada
 
 - **Objetivo:** interfaz `IAIProvider`, adaptadores Gemini/Groq/OpenAI,
   orquestador con timeout y fallback configurable, prompts, normalización.
-- **Dependencias:** T-001 (contratos). Requiere aprobación aparte de
-  instalación de SDKs.
+- **Dependencias:** T-001 (contratos).
 - **Validaciones:** unitarias con mocks de red, typecheck, lint, build.
+- **Estado:** completada (2026-10-11). Tareas T-003A-1 a T-003A-10.
+- **Adaptadores:** Gemini (gemini-2.5-flash), Groq (llama-3.3-70b-versatile),
+  OpenAI (gpt-4o-mini). Llamadas reales deshabilitadas.
+- **Protecciones:** AI_ENABLED=false, realCallsAuthorized=false.
+- **Contratos públicos:** intactos.
+- **Pendiente:** revisión modelo predeterminado Groq.
 
-## T-005 — Cuotas, rate limiting y presupuesto (Fase 4)
+## T-004 — Cuotas, rate limiting y presupuesto (Fase 4)
 
 - **Objetivo:** contadores de generaciones (Supabase), cuota diaria configurable
   (inicial 5/día), reservas atómicas, rate limiting, presupuesto mensual
   (inicial US$5) con control de concurrencia, protección contra abuso.
-- **Dependencias:** T-004. Requiere aprobar definición de visitante, zona
-  horaria y reinicio de cuota antes de implementar.
+- **Dependencias:** T-003A. Requiere aprobación explícita.
 - **Validaciones:** unitarias, pruebas de concurrencia, integración, build.
-- **Decisión arquitectónica (2026-10-09):** sin autenticación obligatoria
-  en el MVP. Identificación anónima mediante cookie segura HttpOnly,
-  SameSite=Lax y Secure en producción, con ID aleatorio generado por el
-  servidor. Contador de cuota en servidor (no localStorage). Reservas
-  atómicas para evitar superar cuotas con solicitudes concurrentes;
-  liberación cuando la generación no tiene éxito. Rate limiting adicional
-  por IP con límites independientes de la cuota diaria. Controles globales
-  de concurrencia y presupuesto de proveedores de pago. Registro de
-  consumo facturable incluso cuando una solicitud falle después de
-  consumir tokens. Sin fingerprinting invasivo. Sin registro obligatorio.
-  Se documenta expresamente que cambiar de navegador, dispositivo o borrar
-  cookies puede permitir obtener una nueva identidad anónima; el objetivo
-  es reducir el abuso, no prometer impedirlo completamente.
+- **Subtareas:**
+  - T-004-1: Módulo de identificación de visitante ✅
+  - T-004-2: Cliente Supabase ✅
+  - T-004-3A: Esquema PostgreSQL y migraciones ✅
+  - T-004-3: Módulo de cuota diaria (pendiente)
+  - T-004-4: Módulo de rate limiting (pendiente)
+  - T-004-5: Módulo de presupuesto (pendiente)
+  - T-004-6: Integración en descriptionService (pendiente)
+  - T-004-7: Pruebas de integración y concurrencia (pendiente)
+  - T-004-8: Documentación y validación final (pendiente)
+
+## T-005 — (Eliminado — duplicado de T-004)
+
+Fusionado con T-004 para mantener coherencia con el plan SDD.
 
 ## T-006 — PWA (Fase 5)
 

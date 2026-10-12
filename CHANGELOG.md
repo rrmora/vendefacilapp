@@ -243,3 +243,58 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Sin cambios en código de producción. Contratos públicos
   intactos. AI_ENABLED=false. Sin llamadas reales.
 - Validaciones: lint ✓, typecheck ✓, tests 151/151 ✓, build ✓.
+
+## 2026-10-11 — T-004-2: Cliente Supabase (Fase 4)
+
+- `src/lib/db/supabaseClient.ts`: cliente Supabase servidor con
+  `@supabase/supabase-js` 2.117.3. Variables `SUPABASE_URL` y
+  `SUPABASE_SERVICE_ROLE_KEY` (nunca NEXT_PUBLIC_). Validación
+  `isSupabaseConfigured()`, error controlado `SupabaseConfigError`,
+  soporte de inyección para pruebas vía `setSupabaseClient()`,
+  helper `callRpc()` para futuras funciones transaccionales.
+- Tests: `tests/lib/db/supabaseClient.test.ts` (12). Total: 179/179.
+- Sin migraciones, sin tablas, sin operaciones remotas, sin cambios
+  en contratos públicos.
+- Validaciones: lint ✓, typecheck ✓, tests 179/179 ✓, build ✓.
+
+## 2026-10-11 — T-004-1: Módulo de identificación de visitante (Fase 4)
+
+- `src/lib/visitors/visitorService.ts`: generación de visitorId
+  UUID v4, validación, extracción de cookie y helper
+  `getOrCreateVisitorId`.
+- Cookie `visitor_id` con HttpOnly, SameSite=Lax, Secure en
+  producción, Path=/, Max-Age 1 año.
+- Tests: `tests/lib/visitors/visitorService.test.ts` (14).
+  Total: 165/165.
+- Sin dependencias nuevas, sin migraciones, sin llamadas reales,
+  sin cambios en contratos públicos, sin Supabase.
+- Validaciones: lint ✓, typecheck ✓, tests 165/165 ✓, build ✓.
+
+## 2026-10-11 — T-003A-10: Documentación y cierre de arquitectura de IA (Fase 3)
+
+- Cierre documental de T-003A. Sin cambios en código de producción.
+- Adaptadores implementados y documentados: Gemini (gemini-2.5-flash),
+  Groq (llama-3.3-70b-versatile), OpenAI (gpt-4o-mini).
+- Llamadas reales deshabilitadas por defecto: AI_ENABLED=false
+  (variable de entorno) y realCallsAuthorized=false (flag interno
+  en código, no configurable por el usuario).
+- Contratos públicos intactos: IDescriptionRequest/IDescriptionResponse.
+- Endpoint /api/generate conserva respuesta MOCK.
+- Pendiente registrado: revisión del modelo predeterminado de Groq
+  (llama-3.3-70b-versatile en estado "Enterprise" con "Contact Sales";
+  indicios de deprecación).
+- Validaciones: lint ✓, typecheck ✓, tests 151/151 ✓, build ✓.
+
+## 2026-10-12 — T-004-3A: Esquema PostgreSQL y migraciones (Fase 4)
+
+- 6 migraciones SQL idempotentes en `supabase/migrations/`:
+  visitor_daily_quota, quota_reservations, generation_records,
+  budget_tracking, ip_rate_limits, habilitación de RLS.
+- Restricciones: claves primarias, foráneas, CHECK, UNIQUE,
+  índices parciales, TIMESTAMPTZ, estrategia America/Mexico_City.
+- `tests/integration/schema.test.ts`: 33 pruebas estáticas de
+  esquema (validación de sintaxis SQL por contenido de archivo).
+- Las migraciones NO se han ejecutado contra PostgreSQL real ni
+  Supabase. Solo validación estática de contenido.
+- Total: 228/228 (195 unitarias/integración + 33 estáticas).
+- Validaciones: lint ✓, typecheck ✓, tests 228/228 ✓, build ✓.

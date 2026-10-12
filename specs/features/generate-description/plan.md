@@ -78,3 +78,29 @@ reducir el abuso, no prometer impedirlo completamente.
 
 Estos cambios NO se implementan durante T-003A. Se incorporan a la
 especificación de T-004 y requieren un plan técnico para aprobación.
+
+## 8. Cierre de Fase 3 — T-003A (2026-10-11)
+
+### 8.1 Estado final
+
+- Arquitectura de IA completada y documentada.
+- Adaptadores: Gemini, Groq, OpenAI implementados con fetch nativo.
+- Llamadas reales deshabilitadas: AI_ENABLED=false (default),
+  realCallsAuthorized=false (flag interno).
+- 151 pruebas, lint/typecheck/build exitosos.
+- Contratos públicos intactos.
+
+### 8.2 Decisiones pendientes para T-004
+
+1. Revisión del modelo predeterminado de Groq (llama-3.3-70b-versatile
+   en estado "Enterprise"; indicios de deprecación).
+2. Definición de visitante anónimo (cookie HttpOnly, SameSite=Lax, Secure).
+3. Cuota inicial: 5 generaciones exitosas por visitante por día.
+4. Presupuesto mensual inicial: US$5.
+5. Rate limiting por IP con límites independientes de la cuota.
+6. Reservas atómicas contra concurrencia.
+7. Registro de consumo facturable incluso en fallos post-consumo.
+
+### 8.3 Requisito
+
+T-004 no comienza sin aprobación explícita del usuario.

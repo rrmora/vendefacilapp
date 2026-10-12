@@ -2,33 +2,55 @@
 
 ## Estado actual del proyecto
 
-Fase 3 — Integración de IA en curso (T-003A). T-003A-1,
-T-003A-2, T-003A-3, T-003A-4, T-003A-5, T-003A-6, T-003A-7,
-T-003A-8 y T-003A-9 completadas.
+Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
+T-004-1, T-004-2 y T-004-3A completadas. T-004-3 a T-004-8 pendientes.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-003A — Arquitectura de proveedores de IA. T-003A-2 completada
-y validada. T-003A-3 (módulo de configuración) en curso.
+T-004-3 — Módulo de cuota diaria (pendiente de aprobación).
 
 ## Última tarea completada
 
-T-003A-9 — Pruebas de integración y seguridad (2026-10-09).
+T-004-3A — Esquema PostgreSQL y migraciones (2026-10-12).
 
-## Últimos cambios
+## Fase 3 — Cierre
 
-- `tests/integration/security.test.ts`: 12 pruebas de integración
-  y seguridad cubriendo: mock conservado, bloqueo de llamadas
-  externas, inmutabilidad de realCallsAuthorized, validación
-  previa, contrato de respuesta, mapeo de errores,
-  BUDGET_EXCEEDED preservado, orden de fallback, bloqueo de
-  proveedores de pago, timeouts/cancelación, no exposición de
-  información sensible y ausencia de llamadas reales.
-- Total: 151 pruebas (12 nuevas).
-- MEMORY/CHANGELOG actualizados.
+T-003A completada. Arquitectura de proveedores de IA documentada y
+validada. 151 pruebas, lint/typecheck/build exitosos.
+
+**Estado operativo:**
+- Adaptadores implementados: Gemini (gemini-2.5-flash), Groq
+  (llama-3.3-70b-versatile), OpenAI (gpt-4o-mini).
+- Llamadas reales deshabilitadas: AI_ENABLED=false (default) y
+  realCallsAuthorized=false (flag interno en código).
+- Contratos públicos intactos: IDescriptionRequest/IDescriptionResponse.
+- Endpoint /api/generate conserva respuesta MOCK.
+- Pendiente: revisión modelo predeterminado Groq (estado Enterprise).
+
+## T-004-1 — Módulo de identificación de visitante
+
+- `src/lib/visitors/visitorService.ts`: generación de visitorId
+  UUID v4, validación, extracción de cookie y helper
+  `getOrCreateVisitorId`.
+- Cookie `visitor_id` con HttpOnly, SameSite=Lax, Secure en
+  producción, Path=/, Max-Age 1 año.
+- Tests: 14 unitarias. Total: 165/165.
+- Sin dependencias nuevas, sin migraciones, sin llamadas reales,
+  sin cambios en contratos públicos.
+
+## T-004-3A — Esquema PostgreSQL y migraciones
+
+- 6 migraciones SQL en `supabase/migrations/`: visitor_daily_quota,
+  quota_reservations, generation_records, budget_tracking,
+  ip_rate_limits, RLS.
+- `tests/integration/schema.test.ts`: 33 pruebas estáticas de
+  esquema (validación de sintaxis SQL por contenido de archivo).
+- Las migraciones NO se han ejecutado contra PostgreSQL real ni
+  Supabase. Solo validación estática de contenido.
+- Total: 228/228 (195 unitarias/integración + 33 estáticas de esquema).
 
 ## Decisiones arquitectónicas
 
@@ -73,6 +95,5 @@ Ninguno.
 
 ## Siguiente tarea propuesta
 
-T-003A-3 — Módulo de configuración (`src/lib/ai/config.ts`):
-AI_ENABLED (default false), prioridad, timeouts, claves y modelos
-por proveedor. Requiere aprobación.
+T-004-3 — Módulo de cuota diaria (`src/lib/quota/quotaService.ts`).
+Requiere aprobación explícita del usuario.
