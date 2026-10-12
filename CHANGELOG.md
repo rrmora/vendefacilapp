@@ -294,7 +294,11 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
   índices parciales, TIMESTAMPTZ, estrategia America/Mexico_City.
 - `tests/integration/schema.test.ts`: 33 pruebas estáticas de
   esquema (validación de sintaxis SQL por contenido de archivo).
-- Las migraciones NO se han ejecutado contra PostgreSQL real ni
-  Supabase. Solo validación estática de contenido.
+- Validación real en PostgreSQL 17-alpine (Docker): 6 migraciones
+  aplicadas exitosamente, 5 tablas, 20 índices, restricciones
+  verificadas (CHECK, UNIQUE, FOREIGN KEY), RLS activo, roles
+  anon/authenticated sin acceso.
+- Corregido: índice `idx_gen_month` reemplazado por `idx_gen_created_at`
+  (B-tree sobre created_at) por error IMMUTABLE en PostgreSQL 17.
 - Total: 228/228 (195 unitarias/integración + 33 estáticas).
 - Validaciones: lint ✓, typecheck ✓, tests 228/228 ✓, build ✓.

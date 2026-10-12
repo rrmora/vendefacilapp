@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS generation_records (
 
 CREATE INDEX idx_gen_visitor ON generation_records (visitor_id, created_at);
 CREATE INDEX idx_gen_cost ON generation_records (created_at, estimated_cost_usd);
-CREATE INDEX idx_gen_month ON generation_records (DATE_TRUNC('month', created_at));
+CREATE INDEX idx_gen_created_at ON generation_records (created_at);
+
+COMMENT ON INDEX idx_gen_created_at IS 'Consultas mensuales: usar limites UTC con >= inicio y < fin de mes.';
 CREATE INDEX idx_gen_success ON generation_records (success, created_at);
 
 COMMENT ON TABLE generation_records IS 'Registro de consumo facturable de IA.';
