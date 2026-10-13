@@ -300,5 +300,40 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
   anon/authenticated sin acceso.
 - Corregido: índice `idx_gen_month` reemplazado por `idx_gen_created_at`
   (B-tree sobre created_at) por error IMMUTABLE en PostgreSQL 17.
-- Total: 228/228 (195 unitarias/integración + 33 estáticas).
+- Total: 228/228.
 - Validaciones: lint ✓, typecheck ✓, tests 228/228 ✓, build ✓.
+
+## 2026-10-12 — T-004-3: Módulo de cuota diaria (Fase 4)
+
+- `src/lib/quota/quotaService.ts`: reserveQuota, confirmQuota,
+  releaseQuota, getQuotaStatus. Cuota 5/día por visitante.
+  Fecha de cuota en America/Mexico_City, timestamps UTC.
+- Funciones RPC PostgreSQL (`supabase/migrations/007-011`):
+  reserve_quota (SELECT FOR UPDATE + límite 3 pendientes),
+  confirm_quota, release_quota (decrementa con GREATEST),
+  get_quota_status, expire_pending_reservations.
+- Atomicidad verificada: 20 solicitudes simultáneas nunca
+  superan 5 unidades de cuota ocupadas. Ciclo completo
+  reserva→confirma alcanza exactamente 5.
+- generations_used = generaciones confirmadas + reservas
+  pendientes.
+- Decisión aprobada (opción 1): máximo 3 reservas pendientes
+  simultáneas; ráfaga de 20 produce 3 reservas y 17
+  rate_limited.
+- Idempotencia: confirmación/liberación duplicadas retornan
+  already_processed sin doble efecto.
+- Corrección de fechas: release_quota y
+  expire_pending_reservations derivan quota_date desde
+  created_at en America/Mexico_City (no usan CURRENT_DATE),
+  liberando la cuota del día original aunque la operación
+  ocurra después de medianoche.
+- Permisos: REVOKE EXECUTE FROM PUBLIC en las 5 RPC; solo
+  el servidor (owner/service_role) puede ejecutarlas.
+- Fail-closed: QuotaServiceError si Supabase no responde.
+- Pruebas: 16 unitarias (mocks) + 8 concurrencia reales contra
+  PostgreSQL 17-alpine en Docker, incluyendo 2 regresión de
+  cambio de día (creada antes de medianoche, liberada/expirada
+  después).
+- Total: 252/252.
+- Validaciones: lint ✓, typecheck ✓, tests 252/252 ✓, build ✓.
+- Pendiente: integrar en /api/generate (T-004-6).

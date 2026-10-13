@@ -3,18 +3,19 @@
 ## Estado actual del proyecto
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
-T-004-1, T-004-2 y T-004-3A completadas. T-004-3 a T-004-8 pendientes.
+T-004-1, T-004-2, T-004-3A y T-004-3 completadas.
+T-004-4 a T-004-8 pendientes.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-3 — Módulo de cuota diaria (pendiente de aprobación).
+T-004-4 — Módulo de rate limiting (pendiente de aprobación).
 
 ## Última tarea completada
 
-T-004-3A — Esquema PostgreSQL y migraciones (2026-10-12).
+T-004-3 — Módulo de cuota diaria (2026-10-12).
 
 ## Fase 3 — Cierre
 
@@ -54,7 +55,40 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   anon/authenticated sin acceso.
 - Corregido: índice `idx_gen_month` reemplazado por `idx_gen_created_at`
   (B-tree sobre created_at) por error IMMUTABLE en PostgreSQL 17.
-- Total: 228/228 (195 unitarias/integración + 33 estáticas de esquema).
+- Total: 250/250.
+
+## T-004-3 — Módulo de cuota diaria
+
+- `src/lib/quota/quotaService.ts`: reserveQuota, confirmQuota,
+  releaseQuota, getQuotaStatus. Fecha de cuota en
+  America/Mexico_City, timestamps UTC.
+- Funciones RPC PostgreSQL (migraciones 007-011):
+  reserve_quota, confirm_quota, release_quota, get_quota_status,
+  expire_pending_reservations.
+- Atomicidad: SELECT FOR UPDATE serializa la cuota; nunca se
+  superan 5 unidades de cuota ocupadas por visitante por día.
+- generations_used = generaciones confirmadas + reservas
+  pendientes (no solo generaciones exitosas).
+- Decisión aprobada (opción 1): máximo 3 reservas pendientes
+  simultáneas. Una ráfaga de 20 produce 3 reservas y 17
+  rate_limited; tras confirmar/liberar se alcanzan las 5.
+- Idempotencia: confirmación y liberación duplicadas retornan
+  already_processed sin doble efecto.
+- Corrección de fechas: release_quota y
+  expire_pending_reservations derivan quota_date desde
+  created_at en America/Mexico_City (no usan CURRENT_DATE),
+  liberando la cuota del día original aunque la operación
+  ocurra después de medianoche.
+- Permisos: REVOKE EXECUTE FROM PUBLIC en las 5 RPC; solo
+  el servidor (owner/service_role) puede ejecutarlas.
+- Fail-closed: si Supabase no responde, lanza QuotaServiceError
+  (no se genera).
+- Pruebas: 16 unitarias con mocks + 8 de concurrencia reales
+  contra PostgreSQL 17-alpine en Docker (20 simultáneas, ciclo
+  completo hasta 5, liberación, idempotencia, límite pendientes,
+  2 regresión de cambio de día).
+- Total: 252/252.
+- Pendiente: integrar quotaService en /api/generate (T-004-6).
 
 ## Decisiones arquitectónicas
 
@@ -99,5 +133,5 @@ Ninguno.
 
 ## Siguiente tarea propuesta
 
-T-004-3 — Módulo de cuota diaria (`src/lib/quota/quotaService.ts`).
+T-004-4 — Módulo de rate limiting (`src/lib/ratelimit/rateLimiter.ts`).
 Requiere aprobación explícita del usuario.

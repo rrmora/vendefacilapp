@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 6 archivos SQL', () => {
+    it('contiene 11 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(6);
+      expect(files).toHaveLength(11);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -27,7 +27,7 @@ describe('schema migrations', () => {
         .filter((f) => f.endsWith('.sql'))
         .sort();
       expect(files[0]).toMatch(/^001_/);
-      expect(files[5]).toMatch(/^006_/);
+      expect(files[10]).toMatch(/^011_/);
     });
   });
 

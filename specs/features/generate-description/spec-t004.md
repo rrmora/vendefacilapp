@@ -99,6 +99,16 @@ CREATE INDEX idx_ip_lookup ON ip_rate_limits (ip_address, window_start);
 
 ## 2. Algoritmo transaccional de cuotas
 
+**Definicion de `generations_used`:** cuota ocupada por generaciones
+confirmadas y reservas pendientes. No representa exclusivamente
+generaciones exitosas. `reserve_quota` incrementa al reservar;
+`confirm_quota` no incrementa nuevamente; `release_quota` y
+`expire_pending_reservations` decrementan unicamente reservas que
+realmente estaban pendientes.
+
+Maximo 5 unidades de cuota ocupadas y 3 reservas pendientes
+simultaneas por visitante.
+
 ### 2.1 Reservar cuota
 
 ```sql
@@ -147,14 +157,14 @@ WITH released AS (
   UPDATE quota_reservations
   SET status = 'released', completed_at = NOW()
   WHERE reservation_id = $1 AND status = 'pending'
-  RETURNING visitor_id
+  RETURNING visitor_id, (created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date
 )
 UPDATE visitor_daily_quota q
 SET generations_used = GREATEST(q.generations_used - 1, 0),
     updated_at = NOW()
 FROM released r
 WHERE q.visitor_id = r.visitor_id
-  AND q.quota_date = CURRENT_DATE;
+  AND q.quota_date = r.quota_date;
 
 COMMIT;
 ```
@@ -168,14 +178,14 @@ WITH expired AS (
   UPDATE quota_reservations
   SET status = 'expired'
   WHERE status = 'pending' AND expires_at < NOW()
-  RETURNING visitor_id
+  RETURNING visitor_id, (created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date
 )
 UPDATE visitor_daily_quota q
 SET generations_used = GREATEST(q.generations_used - 1, 0),
     updated_at = NOW()
 FROM expired e
 WHERE q.visitor_id = e.visitor_id
-  AND q.quota_date = CURRENT_DATE;
+  AND q.quota_date = e.quota_date;
 
 COMMIT;
 ```
@@ -337,8 +347,13 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 
 ### 7.1 Concurrencia de cuota
 - 20 requests simultaneos del mismo visitor.
-- Esperado: exactamente 5 exitosos, 15 con QUOTA_EXCEEDED.
+- Esperado: maximo 3 exitosos (limite de reservas pendientes),
+  17 con RATE_LIMITED.
+- Tras confirmar o liberar reservas, el visitante puede realizar
+  nuevas solicitudes hasta alcanzar su cuota diaria de 5.
 - Verificar que generations_used nunca excede 5.
+- Un ciclo completo reserva→confirma alcanza exactamente 5
+  generaciones exitosas en el dia.
 
 ### 7.2 Reservas expiradas
 - Crear reserva, simular expiracion.
