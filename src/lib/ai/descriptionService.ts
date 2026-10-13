@@ -5,6 +5,7 @@ import {
   reserveQuota,
   confirmQuota,
   releaseQuota,
+  markQuotaSent,
   QuotaServiceError,
 } from '@/lib/quota/quotaService';
 import {
@@ -278,6 +279,20 @@ export async function generateDescription(
     },
   };
 
+  if (quotaReservationId) {
+    try {
+      await markQuotaSent(quotaReservationId);
+    } catch {
+      return {
+        response: errorResponse(
+          'INTERNAL_ERROR',
+          'La generación con IA no está disponible todavía.'
+        ),
+        status: 503,
+      };
+    }
+  }
+
   try {
     const outcome = await generateWithFallback(
       {
@@ -371,11 +386,11 @@ export async function generateDescription(
       };
     }
 
-    if (quotaReservationId) {
+    if (quotaReservationId && !outcome.consumptionUnknown) {
       try {
         await releaseQuota(quotaReservationId);
       } catch {
-        // Fail-closed: conservar fail-over sin revelar detalles.
+        // Fail-closed: conservar la reserva si no se puede liberar.
       }
     }
 

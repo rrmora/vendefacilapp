@@ -17,6 +17,17 @@ function uuid(index: number): string {
   return `770e8400-e29b-41d4-a716-44665544${index.toString().padStart(4, '0')}`;
 }
 
+function probeDatabase(): string | null {
+  try {
+    return execSync(
+      `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT 1;"`,
+      { encoding: 'utf-8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim();
+  } catch {
+    return null;
+  }
+}
+
 describe('budget concurrency integration', () => {
   beforeAll(() => {
     try {
@@ -29,17 +40,17 @@ describe('budget concurrency integration', () => {
     );
 
     let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const result = exec(`docker exec ${CONTAINER_NAME} pg_isready -U testuser -d testdb`);
-        if (result.includes('accepting connections')) {
-          ready = true;
-          break;
-        }
-      } catch {
+    let consecutive = 0;
+    for (let i = 0; i < 90 && consecutive < 3; i++) {
+      // El entrypoint de postgres levanta un servidor efimero para el setup y luego
+      // lo reinicia: una consulta real exige 3 respuestas seguidas para confirmar
+      // que el servidor quedo estable.
+      consecutive = probeDatabase() === '1' ? consecutive + 1 : 0;
+      if (consecutive < 3) {
+        execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
       }
-      execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
     }
+    ready = consecutive >= 3;
 
     if (!ready) {
       throw new Error('PostgreSQL no se pudo iniciar');

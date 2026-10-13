@@ -20,6 +20,7 @@ export interface OrchestratorError {
   success: false;
   errorCode: string;
   errorMessage: string;
+  consumptionUnknown?: boolean;
 }
 
 export type OrchestratorOutcome = OrchestratorResult | OrchestratorError;
@@ -121,6 +122,7 @@ export async function generateWithFallback(
   const globalStart = Date.now();
   const globalTimeoutMs = getAIConfig().globalTimeoutMs;
   let lastError: AIProviderError | null = null;
+  let consumptionUnknown = false;
 
   for (const providerInfo of providers) {
     if (context.abortSignal?.aborted) {
@@ -191,8 +193,10 @@ export async function generateWithFallback(
         } catch {
           try {
             await budgetController.consumeUnknown(reservationId, providerInfo.model);
+            consumptionUnknown = true;
           } catch {
             // Keep the reservation committed for reconciliation if DB is still unavailable.
+            consumptionUnknown = true;
           }
 
           return {
@@ -214,8 +218,10 @@ export async function generateWithFallback(
       if (reservationId && budgetController) {
         try {
           await budgetController.consumeUnknown(reservationId, providerInfo.model);
+          consumptionUnknown = true;
         } catch {
           // Keep the original error if budget reconciliation fails.
+          consumptionUnknown = true;
         }
       }
 
@@ -268,6 +274,7 @@ export async function generateWithFallback(
       success: false,
       errorCode: toPublicErrorCode(lastError.kind),
       errorMessage: 'No se pudo generar la descripción. Inténtalo de nuevo.',
+      consumptionUnknown,
     };
   }
 
@@ -275,6 +282,7 @@ export async function generateWithFallback(
     success: false,
     errorCode: 'INTERNAL_ERROR',
     errorMessage: 'No se pudo generar la descripción.',
+    consumptionUnknown,
   };
 }
 

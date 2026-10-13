@@ -11,6 +11,12 @@ export type QuotaConfirmationResult =
   | { status: 'already_processed'; previousStatus: string }
   | { status: 'not_found' };
 
+export type QuotaSentResult =
+  | { status: 'sent' }
+  | { status: 'already_sent'; previousStatus: string }
+  | { status: 'already_processed'; previousStatus: string }
+  | { status: 'not_found' };
+
 export type QuotaReleaseResult =
   | { status: 'released' }
   | { status: 'already_processed'; previousStatus: string }
@@ -142,6 +148,49 @@ export async function releaseQuota(reservationId: string): Promise<QuotaReleaseR
       `No se pudo liberar cuota: ${error instanceof Error ? error.message : 'error desconocido'}`
     );
   }
+}
+
+export async function markQuotaSent(reservationId: string): Promise<QuotaSentResult> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const result = await callRpc<{
+        status: string;
+        previous_status?: string;
+      }>('mark_quota_sent', {
+        p_reservation_id: reservationId,
+      });
+
+      if (result.status === 'sent') {
+        return { status: 'sent' };
+      }
+
+      if (result.status === 'already_sent') {
+        return {
+          status: 'already_sent',
+          previousStatus: result.previous_status ?? 'sent_uncertain',
+        };
+      }
+
+      if (result.status === 'already_processed') {
+        return {
+          status: 'already_processed',
+          previousStatus: result.previous_status ?? 'unknown',
+        };
+      }
+
+      return { status: 'not_found' };
+    } catch (error) {
+      if (attempt === 3) {
+        throw new QuotaServiceError(
+          `No se pudo marcar cuota como enviada: ${error instanceof Error ? error.message : 'error desconocido'}`
+        );
+      }
+
+      await delay(50 * attempt);
+    }
+  }
+
+  throw new QuotaServiceError('No se pudo marcar cuota como enviada: error desconocido');
 }
 
 export async function getQuotaStatus(visitorId: string, quotaDate?: string): Promise<QuotaStatus> {

@@ -33,6 +33,7 @@ type MockMode = {
   quotaError?: boolean;
   budgetError?: boolean;
   recordError?: boolean;
+  markQuotaSentError?: boolean;
 };
 
 function createMockClient(mode: MockMode = {}): SupabaseClient {
@@ -43,7 +44,8 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
         name === 'reserve_quota' ||
         name === 'reserve_budget' ||
         name === 'confirm_budget' ||
-        name === 'confirm_quota'
+        name === 'confirm_quota' ||
+        name === 'mark_quota_sent'
       ) {
         return { data: null, error: { message: 'connection failed' } };
       }
@@ -71,6 +73,13 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
           },
         error: null,
       };
+    }
+
+    if (name === 'mark_quota_sent') {
+      if (mode.markQuotaSentError) {
+        return { data: null, error: { message: 'connection failed' } };
+      }
+      return { data: { status: 'sent' }, error: null };
     }
 
     if (name === 'release_quota') {
@@ -341,7 +350,7 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(rpc).toHaveBeenCalledWith('reserve_budget', expect.anything());
   });
 
-  it('I: todos los proveedores fallan liberan cuota', async () => {
+  it('I: todos los proveedores fallan conservan la cuota sent_uncertain', async () => {
     setupRealEnv();
     process.env.AI_GEMINI_API_KEY = 'test-key';
     const client = createMockClient();
@@ -361,7 +370,8 @@ describe('POST /api/generate T-004-6 protections', () => {
 
     expect(response.status).toBe(503);
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
-    expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
   });
 
   it('J: timeout posterior al envío no libera presupuesto', async () => {
@@ -430,6 +440,28 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(response.status).toBe(503);
     const data = await response.json();
     expect(data.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('P: no se puede marcar la cuota como enviada => fail-closed sin llamar al proveedor', async () => {
+    setupRealEnv();
+    process.env.AI_GEMINI_API_KEY = 'test-key';
+    const client = createMockClient({ markQuotaSentError: true });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
   });
 });
 

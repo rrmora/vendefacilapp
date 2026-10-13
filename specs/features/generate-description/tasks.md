@@ -56,11 +56,11 @@ aceptación, validaciones.
   - T-004-1: Módulo de identificación de visitante ✅
   - T-004-2: Cliente Supabase ✅
   - T-004-3A: Esquema PostgreSQL y migraciones ✅
-  - T-004-3: Módulo de cuota diaria (pendiente)
-  - T-004-4: Módulo de rate limiting (pendiente)
-  - T-004-5: Módulo de presupuesto (pendiente)
-  - T-004-6: Integración en descriptionService (pendiente)
-  - T-004-7: Pruebas de integración y concurrencia (pendiente)
+  - T-004-3: Módulo de cuota diaria ✅
+  - T-004-4: Módulo de rate limiting ✅
+  - T-004-5: Módulo de presupuesto ✅
+  - T-004-6: Integración en descriptionService ✅ (local, pendiente de aprobación)
+  - T-004-7: Pruebas de integración y concurrencia ✅ (local, pendiente de aprobación)
   - T-004-8: Documentación y validación final (pendiente)
 
 ## T-005 — (Eliminado — duplicado de T-004)

@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 16 archivos SQL', () => {
+    it('contiene 17 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(16);
+      expect(files).toHaveLength(17);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -33,6 +33,7 @@ describe('schema migrations', () => {
       expect(files[13]).toMatch(/^014_/);
       expect(files[14]).toMatch(/^015_/);
       expect(files[15]).toMatch(/^016_/);
+      expect(files[16]).toMatch(/^017_/);
     });
   });
 
@@ -116,6 +117,37 @@ describe('schema migrations', () => {
 
     it('tiene indice de expiracion', () => {
       expect(sql).toContain('idx_reservations_expiry');
+    });
+  });
+
+  describe('migracion 017 proteccion persistente de reservas', () => {
+    const sql = readMigration('017_quota_reservation_protection.sql');
+
+    it('reemplaza el CHECK de estados incluyendo sent_uncertain', () => {
+      expect(sql).toContain('DROP CONSTRAINT IF EXISTS quota_reservations_status_check');
+      expect(sql).toContain("CHECK (status IN ('pending', 'sent_uncertain', 'completed', 'released', 'expired'))");
+    });
+
+    it('define mark_quota_sent con bloqueo de fila', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.mark_quota_sent(p_reservation_id UUID)');
+      expect(sql).toContain("SET status = 'sent_uncertain'");
+      expect(sql).toContain('FOR UPDATE');
+    });
+
+    it('confirm_quota y release_quota aceptan reservas inciertas', () => {
+      expect(sql).toContain("IF v_status NOT IN ('pending', 'sent_uncertain') THEN");
+    });
+
+    it('expire_pending_reservations completa-incertas pero solo expira pendientes', () => {
+      expect(sql).toContain("WHERE r.status IN ('pending', 'sent_uncertain')");
+      expect(sql).toContain("WHERE status = 'pending' AND expires_at < NOW()");
+    });
+
+    it('revoca EXECUTE a PUBLIC, anon y authenticated y concede a service_role', () => {
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.mark_quota_sent(UUID) FROM PUBLIC');
+      expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.mark_quota_sent(UUID) FROM anon");
+      expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.mark_quota_sent(UUID) FROM authenticated");
+      expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.mark_quota_sent(UUID) TO service_role');
     });
   });
 

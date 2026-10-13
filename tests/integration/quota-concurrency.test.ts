@@ -40,6 +40,16 @@ function countStatus(results: string[], status: string): number {
   return results.filter((r) => r.includes(`"${status}"`)).length;
 }
 
+function countRpcStatus(results: string[], status: string): number {
+  return results.filter((raw) => {
+    try {
+      return (JSON.parse(raw.trim()) as { status?: string }).status === status;
+    } catch {
+      return false;
+    }
+  }).length;
+}
+
 async function confirmPending(visitorId: string): Promise<void> {
   const pendingIds = query(
     `SELECT reservation_id FROM quota_reservations WHERE visitor_id = '${visitorId}' AND status = 'pending';`
@@ -49,6 +59,17 @@ async function confirmPending(visitorId: string): Promise<void> {
 
   for (const id of ids) {
     query(`SELECT confirm_quota('${id}'::uuid);`);
+  }
+}
+
+function probeDatabase(): string | null {
+  try {
+    return execSync(
+      `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT 1;"`,
+      { encoding: 'utf-8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim();
+  } catch {
+    return null;
   }
 }
 
@@ -64,17 +85,17 @@ describe('quota concurrency integration', () => {
     );
 
     let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const result = exec(`docker exec ${CONTAINER_NAME} pg_isready -U testuser -d testdb`);
-        if (result.includes('accepting connections')) {
-          ready = true;
-          break;
-        }
-      } catch {
+    let consecutive = 0;
+    for (let i = 0; i < 90 && consecutive < 3; i++) {
+      // El entrypoint de postgres levanta un servidor efimero para el setup y luego
+      // lo reinicia: una consulta real exige 3 respuestas seguidas para confirmar
+      // que el servidor quedo estable.
+      consecutive = probeDatabase() === '1' ? consecutive + 1 : 0;
+      if (consecutive < 3) {
+        execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
       }
-      execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
     }
+    ready = consecutive >= 3;
 
     if (!ready) {
       throw new Error('PostgreSQL no se pudo iniciar');
@@ -243,4 +264,87 @@ describe('quota concurrency integration', () => {
 
     expect(used).toBe(0);
   });
+
+  it('20 mark_quota_sent concurrentes producen una sola transicion', async () => {
+    const visitorId = '550e8400-e29b-41d4-a716-446655440010';
+    const quotaDate = getQuotaDate();
+    const reservationId = '990e8400-e29b-41d4-a716-446655440010';
+
+    query(`SELECT reserve_quota('${visitorId}'::uuid, '${quotaDate}'::date, '${reservationId}'::uuid);`);
+
+    const calls = Array.from({ length: 20 }, () => {
+      const sql = `SELECT mark_quota_sent('${reservationId}'::uuid);`;
+      return execAsync(`docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "${sql}"`);
+    });
+
+    const results = await Promise.all(calls);
+    const statuses = results.map((r) => r.stdout);
+
+    expect(countRpcStatus(statuses, 'sent')).toBe(1);
+    expect(countRpcStatus(statuses, 'already_sent')).toBe(19);
+    expect(query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid;`)).toBe(
+      'sent_uncertain'
+    );
+  }, 90000);
+
+  it('20 confirmaciones concurrentes sobre reserva incierta consumen una sola unidad', async () => {
+    const visitorId = '550e8400-e29b-41d4-a716-446655440011';
+    const quotaDate = getQuotaDate();
+    const reservationId = '990e8400-e29b-41d4-a716-446655440011';
+
+    query(`SELECT reserve_quota('${visitorId}'::uuid, '${quotaDate}'::date, '${reservationId}'::uuid);`);
+    query(`SELECT mark_quota_sent('${reservationId}'::uuid);`);
+
+    const calls = Array.from({ length: 20 }, () => {
+      const sql = `SELECT confirm_quota('${reservationId}'::uuid);`;
+      return execAsync(`docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "${sql}"`);
+    });
+
+    const results = await Promise.all(calls);
+    const statuses = results.map((r) => r.stdout);
+
+    expect(countRpcStatus(statuses, 'confirmed')).toBe(1);
+    expect(countRpcStatus(statuses, 'already_processed')).toBe(19);
+    expect(query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid;`)).toBe(
+      'completed'
+    );
+
+    const used = parseInt(
+      query(
+        `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}' AND quota_date = '${quotaDate}';`
+      ),
+      10
+    );
+
+    expect(used).toBe(1);
+  }, 90000);
+
+  it('20 liberaciones concurrentes sobre reserva incierta liberan una sola unidad', async () => {
+    const visitorId = '550e8400-e29b-41d4-a716-446655440012';
+    const quotaDate = getQuotaDate();
+    const reservationId = '990e8400-e29b-41d4-a716-446655440012';
+
+    query(`SELECT reserve_quota('${visitorId}'::uuid, '${quotaDate}'::date, '${reservationId}'::uuid);`);
+    query(`SELECT mark_quota_sent('${reservationId}'::uuid);`);
+
+    const calls = Array.from({ length: 20 }, () => {
+      const sql = `SELECT release_quota('${reservationId}'::uuid);`;
+      return execAsync(`docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "${sql}"`);
+    });
+
+    const results = await Promise.all(calls);
+    const statuses = results.map((r) => r.stdout);
+
+    expect(countRpcStatus(statuses, 'released')).toBe(1);
+    expect(countRpcStatus(statuses, 'already_processed')).toBe(19);
+
+    const used = parseInt(
+      query(
+        `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}' AND quota_date = '${quotaDate}';`
+      ),
+      10
+    );
+
+    expect(used).toBe(0);
+  }, 90000);
 });

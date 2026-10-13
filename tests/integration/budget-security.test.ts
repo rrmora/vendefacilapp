@@ -14,6 +14,17 @@ function sqlAs(role: string, statement: string): string {
   return `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SET ROLE ${role}; ${statement};"`;
 }
 
+function probeDatabase(): string | null {
+  try {
+    return execSync(
+      `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT 1;"`,
+      { encoding: 'utf-8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }
+    ).trim();
+  } catch {
+    return null;
+  }
+}
+
 describe('budget security integration', () => {
   beforeAll(() => {
     try {
@@ -26,17 +37,17 @@ describe('budget security integration', () => {
     );
 
     let ready = false;
-    for (let i = 0; i < 30; i++) {
-      try {
-        const result = exec(`docker exec ${CONTAINER_NAME} pg_isready -U testuser -d testdb`);
-        if (result.includes('accepting connections')) {
-          ready = true;
-          break;
-        }
-      } catch {
+    let consecutive = 0;
+    for (let i = 0; i < 90 && consecutive < 3; i++) {
+      // El entrypoint de postgres levanta un servidor efimero para el setup y luego
+      // lo reinicia: una consulta real exige 3 respuestas seguidas para confirmar
+      // que el servidor quedo estable.
+      consecutive = probeDatabase() === '1' ? consecutive + 1 : 0;
+      if (consecutive < 3) {
+        execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
       }
-      execSync('ping -n 2 127.0.0.1 > nul 2>&1', { stdio: 'ignore' });
     }
+    ready = consecutive >= 3;
 
     if (!ready) {
       throw new Error('PostgreSQL no se pudo iniciar');

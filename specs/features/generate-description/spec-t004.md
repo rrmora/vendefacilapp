@@ -432,9 +432,17 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 
 ## 10. Rate limiting por IP (T-004-4)
 
-- Límites: 10 solicitudes por minuto, 100 por hora y 500 por ventana
-  móvil de 24 horas (implementados mediante cubetas fijas alineadas por
-  `date_trunc`).
+- Límites: 10 solicitudes por minuto, 100 por hora y 500 por día.
+- **Ventanas fijas de calendario, NO ventanas móviles.** La implementación
+  usa cubetas alineadas con `date_trunc('minute'|'hour'|'day', NOW())` sobre
+  la tabla `ip_rate_limits` (`ip_address`, `window_start`, `request_count`).
+  Cada verificación opera únicamente sobre la cubeta del instante actual; las
+  cubetas anteriores no se suman.
+- Consecuencia asumida: al cruzar un cambio de cubeta el contador se reinicia,
+  por lo que una misma IP puede recibir hasta 20 solicitudes en aproximadamente
+  un segundo (10 al final de una cubeta y 10 al inicio de la siguiente). El
+  límite de 10 por minuto es por cubeta de calendario, no por cualquier
+  intervalo móvil de 60 segundos.
 - Función RPC: `check_rate_limit(INET)`, con `SELECT ... FOR UPDATE` por
   cubeta. `EXECUTE` revocado a `PUBLIC`.
 - `TRUST_PROXY=false` por defecto; `X-Forwarded-For` solo se interpreta
@@ -451,9 +459,35 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
   completa durante la ventana activa. Alternativa futura de HMAC requiere
   cambiar la columna a `TEXT`/`bytea` y añadir secreto del servidor;
   no aplicar sin autorización.
+- El comentario de `005_create_ip_rate_limits.sql` menciona "sliding
+  window"; se conserva sin modificar por tratarse de una migración ya
+  aplicada. La semántica real es la descrita en esta sección.
 - No integrado todavía en `/api/generate` (T-004-6).
 
-## 10. Restricciones
+## 11. Bloqueantes de producción (Fase 4)
+
+- **BLOQUEANTE — límite de 10 solicitudes por cualquier intervalo móvil de
+  60 segundos.** La garantía solicitada no está implementada: las cubetas de
+  calendario permiten ráfagas de hasta 20 solicitudes alrededor del cambio de
+  minuto. Corregirlo requiere una migración SQL autorizada que remplace la
+  lógica de cubetas por conteo de eventos en ventana móvil; no se modifica
+  `012_check_rate_limit.sql` sin autorización expresa.
+- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7.** La
+  integración en `/api/generate` y la protección persistente de resultado
+  incierto están implementadas y validadas localmente (324/324), pero no
+  aprobadas para producción. `AI_ENABLED=false` y `realCallsAuthorized=false`
+  se mantienen.
+- **PENDIENTE — mecanismo automático de reconciliación de reservas.** No
+  existe un job que invoque periódicamente `expire_pending_reservations()` y
+  `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre
+  de forma reactiva; las reservas `pending` vencidas y las reservas de
+  presupuesto antiguas permanecen sin consolidar hasta que se programe el job.
+  Sin él, las cuotas se liberan tarde y las reservas inciertas se conservan de
+  forma conservadora pero indefinida.
+- **PENDIENTE — verificación del estado del modelo predeterminado de Groq**
+  (fase T-003A).
+
+## 12. Restricciones
 
 - No instalar dependencias hasta aprobacion final.
 - No crear tablas ni migraciones hasta aprobacion final.

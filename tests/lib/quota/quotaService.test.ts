@@ -4,6 +4,7 @@ import {
   reserveQuota,
   confirmQuota,
   releaseQuota,
+  markQuotaSent,
   getQuotaStatus,
   QuotaServiceError,
 } from '@/lib/quota/quotaService';
@@ -169,6 +170,77 @@ describe('quotaService', () => {
       setSupabaseClient(errorClient);
 
       await expect(releaseQuota('660e8400-e29b-41d4-a716-446655440001')).rejects.toThrow(QuotaServiceError);
+    });
+  });
+
+  describe('markQuotaSent', () => {
+    it('marca la reserva como enviada correctamente', async () => {
+      const rpc = vi.fn().mockResolvedValue({ data: { status: 'sent' }, error: null });
+      setSupabaseClient({ rpc } as unknown as SupabaseClient);
+
+      const result = await markQuotaSent('660e8400-e29b-41d4-a716-446655440001');
+
+      expect(result).toEqual({ status: 'sent' });
+      expect(rpc).toHaveBeenCalledWith('mark_quota_sent', {
+        p_reservation_id: '660e8400-e29b-41d4-a716-446655440001',
+      });
+    });
+
+    it('retorna already_sent cuando la reserva ya fue enviada', async () => {
+      const mockClient = createMockClient({
+        status: 'already_sent',
+        previous_status: 'sent_uncertain',
+      });
+      setSupabaseClient(mockClient);
+
+      const result = await markQuotaSent('660e8400-e29b-41d4-a716-446655440001');
+
+      expect(result).toEqual({
+        status: 'already_sent',
+        previousStatus: 'sent_uncertain',
+      });
+    });
+
+    it('retorna already_processed cuando la reserva ya fue confirmada', async () => {
+      const mockClient = createMockClient({
+        status: 'already_processed',
+        previous_status: 'completed',
+      });
+      setSupabaseClient(mockClient);
+
+      const result = await markQuotaSent('660e8400-e29b-41d4-a716-446655440001');
+
+      expect(result).toEqual({ status: 'already_processed', previousStatus: 'completed' });
+    });
+
+    it('retorna not_found cuando la reserva no existe', async () => {
+      const mockClient = createMockClient({ status: 'not_found' });
+      setSupabaseClient(mockClient);
+
+      const result = await markQuotaSent('660e8400-e29b-41d4-a716-446655440001');
+
+      expect(result).toEqual({ status: 'not_found' });
+    });
+
+    it('reintenta y recupera ante un fallo transitorio', async () => {
+      const rpc = vi
+        .fn()
+        .mockResolvedValueOnce({ data: null, error: { message: 'connection failed' } })
+        .mockResolvedValueOnce({ data: { status: 'sent' }, error: null });
+      setSupabaseClient({ rpc } as unknown as SupabaseClient);
+
+      const result = await markQuotaSent('660e8400-e29b-41d4-a716-446655440001');
+
+      expect(result).toEqual({ status: 'sent' });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    });
+
+    it('lanza QuotaServiceError tras agotar los reintentos', async () => {
+      const errorClient = createErrorClient();
+      setSupabaseClient(errorClient);
+
+      await expect(markQuotaSent('660e8400-e29b-41d4-a716-446655440001')).rejects.toThrow(QuotaServiceError);
+      expect((errorClient.rpc as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
     });
   });
 

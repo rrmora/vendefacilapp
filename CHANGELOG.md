@@ -362,7 +362,7 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Pruebas: 13 unitarias + 2 integracion real PostgreSQL 17.
 - Total: 281/281.
 - Validaciones: lint, typecheck, test y build exitosos.
-- Decision: se agreg� budget_reservations porque budget_tracking agregado no permitia idempotencia; esquema INET no se cambio.
+- Decision: se agregó budget_reservations porque budget_tracking agregado no permitia idempotencia; esquema INET no se cambio.
 - Pendiente: integracion en /api/generate (T-004-6), job de limpieza y HMAC de IP (futuro).
 
 ## 2026-10-13 - Correccion de seguridad T-004-5: RLS y permisos en budget_reservations (Fase 4)
@@ -402,3 +402,47 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Riesgo bloqueante de produccion: generacion correcta con falla de generation_records y confirmQuota puede provocar liberacion incorrecta de cuota.
 - Riesgo obligatorio para T-004-7: resolucion de pruebas automaticas, proteccion persistente para resultados inciertos, concurrencia y recuperacion tras reinicio.
 - Estado: implementado y committeado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-13 — T-004-7 Parte A: prueba automatizada de reconciliacion PostgreSQL
+
+- tests/integration/reconciliation.test.ts: se elimino describe.skip; los fixtures SQL se ejecutan con docker cp + psql -f y usan CURRENT_DATE.
+- Causa confirmada del skip: los comandos SQL multilinea con psql -c fallaban en el harness y la fecha de cuota fija quedo desfasada.
+- 3 pruebas reales contra PostgreSQL 17-alpine: pending con exito no se libera al expirar; pending sin registro exitoso expira y libera; reconciliacion de presupuesto idempotente.
+- Sin cambios de esquema ni de contratos publicos.
+
+## 2026-10-13 — T-004-7 Parte B: proteccion persistente de resultado incierto
+
+- supabase/migrations/017_quota_reservation_protection.sql: estado sent_uncertain en quota_reservations, RPC mark_quota_sent(UUID), confirm_quota y release_quota aceptan pending y sent_uncertain, expire_pending_reservations completa las inciertas con exito y nunca las libera. EXECUTE revocado a PUBLIC, anon y authenticated; concedido a service_role.
+- src/lib/quota/quotaService.ts: markQuotaSent con 3 reintentos y QuotaServiceError (fail-closed).
+- src/lib/ai/descriptionService.ts: marca la reserva como enviada antes de invocar al orquestador; si falla responde 503 sin llamar al proveedor; no libera cuota cuando el consumo es incierto.
+- src/lib/ai/orchestrator.ts: propaga consumptionUnknown en los errores.
+- Pruebas: 6 unitarias, 5 de integracion del ciclo sent_uncertain, 3 de concurrencia con 20 llamadas simultaneas, 5 estaticas de la migracion y 1 de API.
+- Total: 322/322. Lint, typecheck y build exitosos.
+- Riesgo residual: rate-limit-concurrency.test.ts puede fallar si la rafaga de 20 solicitudes cruza el limite de la ventana fija de un minuto (preexistente).
+- Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-13 — Cierre tecnico T-004-7: correccion de la prueba intermitente de rate limiting
+
+- Diagnostico: check_rate_limit (supabase/migrations/012_check_rate_limit.sql) NO implementa ventana movil; usa cubetas fijas alineadas con date_trunc para minuto, hora y dia. La prueba asumia que las 20 llamadas caerian en una sola cubeta de minuto.
+- Correccion de la prueba: rafaga de 20 procesos psql concurrentes dentro del contenedor (script con docker cp), alineada al inicio de un minuto con 30 s de margen; aserciones apoyadas en el estado persistido (3 filas minuto/hora/dia con 10 cada una, MAX=10, SUM=30), invariantes en el tiempo y incapaces de ocultar una cubeta extra. Se conservan las aserciones estrictas 10 permitidas / 10 rechazadas.
+- Pruebas nuevas: contrato de rate_limited (semilla y llamada en una sola transaccion, sin carrera de minuto) y evidencia de que las cubetas son de calendario.
+- Segunda causa raiz, en los cinco harnesses de integracion: pg_isready acepta conexiones durante el servidor efimero del entrypoint de PostgreSQL, por lo que la siguiente comando fallaba con the database system is shutting down y la rafaga podia servirse contra un servidor reiniciado (17 aceptadas). Sustituido por sonda con consulta real y 3 respuestas consecutivas antes de aplicar migraciones en budget-concurrency, budget-security, quota-concurrency, rate-limit-concurrency y reconciliation.
+- No se modificaron los limites de produccion (10/100/500) ni la logica SQL de check_rate_limit.
+- Total: 324/324. Lint, typecheck y build exitosos. 10/10 ejecuciones completas de pnpm test en verde, ademas de 12 ejecuciones instrumentadas y 15 aisladas de la prueba de rate limit.
+- Riesgo abierto: las cubetas de calendario no son ventana movil; una IP puede recibir hasta 20 solicitudes en ~1 s cruzando el cambio de minuto. Corregirlo requiere una migracion SQL autorizada.
+- Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-13 — Documentacion de ventanas fijas y bloqueantes de produccion (pre-commit T-004-7)
+
+- specs/features/generate-description/spec-t004.md: la seccion 10 declara explicitamente que check_rate_limit usa ventanas fijas de calendario (date_trunc) y NO ventanas moviles, con su consecuencia asumida de hasta 20 solicitudes en ~1 s al cruzar el cambio de minuto.
+- Seccion 11 nueva: bloqueantes de produccion (limite de 10 por cualquier intervalo movil de 60 s pendiente de migracion autorizada; aprobacion de produccion de T-004-6/T-004-7) y pendientes (job automatico de reconciliacion de reservas; verificacion del modelo Groq).
+- Seccion de restricciones renumerada de 10 a 12 para corregir la numeracion duplicada.
+- No se modificaron migraciones historicas ya aplicadas (005 conserva el comentario "sliding window" inexacto; la semantica real quedo documentada en la especificacion).
+- MEMORY.md: bloqueos y pendientes actualizados con los mismos puntos.
+- Estado: sin cambios de codigo. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-13 — Reparacion de codificacion en archivos del proyecto
+
+- MEMORY.md estaba doblemente codificado en UTF-8 (mojibake) y con caracteres perdidos en 4 lineas; se repararon 61 lineas.
+- Mensajes al usuario corruptos en src/lib/ai/orchestrator.ts y src/lib/ai/descriptionService.ts restaurados.
+- Sin cambios de comportamiento.
