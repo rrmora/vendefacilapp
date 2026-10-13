@@ -349,3 +349,26 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Total: 265/265.
 - Validaciones: lint, typecheck, test y build exitosos.
 - Pendiente: integracion en /api/generate (T-004-6) y HMAC de IP opcional (cambio de esquema).
+
+## 2026-10-13 - T-004-5: Modulo de control de presupuesto y costos IA (Fase 4)
+
+- src/lib/budget/budgetService.ts: reserveBudget, confirmBudget, releaseBudget, getBudgetStatus, calculo de costos por modelo.
+- Migracion supabase/migrations/013_budget_reservations.sql: budget_reservations y funciones reserve_budget, confirm_budget, release_budget, get_budget_status.
+- Reserva mensual UTC con umbral de 95%. Reservas idempotentes por reservation_id.
+- Confirmacion concilia gasto real o estimado; liberacion idempotente.
+- Costos basados en tabla de spec: gemini/gpt-4o-mini, Groq con sus tarifas por 1M tokens; maximo por max tokens.
+- Estimacion conservadora 400/200 cuando no hay tokens reportados, marcada como estimada.
+- Fail-closed mediante BudgetServiceError.
+- Pruebas: 13 unitarias + 2 integracion real PostgreSQL 17.
+- Total: 281/281.
+- Validaciones: lint, typecheck, test y build exitosos.
+- Decision: se agregó budget_reservations porque budget_tracking agregado no permitia idempotencia; esquema INET no se cambio.
+- Pendiente: integracion en /api/generate (T-004-6), job de limpieza y HMAC de IP (futuro).
+
+## 2026-10-13 - Correccion de seguridad T-004-5: RLS y permisos en budget_reservations (Fase 4)
+
+- supabase/migrations/014_secure_budget_reservations.sql: RLS habilitado, permisos revocados para anon/authenticated/PUBLIC, EXECUTE de RPC restringido.
+- tests/integration/schema.test.ts: verificaciones de migraciones 14 y seguridad budget_reservations.
+- tests/integration/budget-security.test.ts: prueba real PostgreSQL 17 de acceso denegado para anon/authenticated y RPC privilegiada; service_role puede operar.
+- Decisiones de presupuesto documentadas en MEMORY.md (umbral 4.75, timeout post-envio conciliado, no liberar sin certeza, reserva por fallback, registro de exceso, bloqueo futuro).
+- Validaciones: lint, typecheck, test y build exitosos.

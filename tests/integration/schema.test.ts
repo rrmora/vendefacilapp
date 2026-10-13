@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 12 archivos SQL', () => {
+    it('contiene 14 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(12);
+      expect(files).toHaveLength(14);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -29,6 +29,8 @@ describe('schema migrations', () => {
       expect(files[0]).toMatch(/^001_/);
       expect(files[10]).toMatch(/^011_/);
       expect(files[11]).toMatch(/^012_/);
+      expect(files[12]).toMatch(/^013_/);
+      expect(files[13]).toMatch(/^014_/);
     });
   });
 
@@ -268,4 +270,19 @@ describe('schema migrations', () => {
       expect(allSql).toContain('reserved_usd');
     });
   });
+  describe('seguridad de budget_reservations (014)', () => {
+    const sql = readMigration('014_secure_budget_reservations.sql');
+    it('habilita RLS', () => {
+      expect(sql).toContain('ALTER TABLE IF EXISTS public.budget_reservations ENABLE ROW LEVEL SECURITY');
+    });
+    it('revoca permisos anon y authenticated', () => {
+      expect(sql).toContain('REVOKE ALL ON TABLE public.budget_reservations FROM anon');
+      expect(sql).toContain('REVOKE ALL ON TABLE public.budget_reservations FROM authenticated');
+    });
+    it('revoca EXECUTE de funciones presupuesto', () => {
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.reserve_budget(UUID, VARCHAR, NUMERIC, NUMERIC) FROM anon');
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.get_budget_status(VARCHAR, NUMERIC) FROM authenticated');
+    });
+  });
+
 });
