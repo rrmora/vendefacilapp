@@ -372,3 +372,33 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - tests/integration/budget-security.test.ts: prueba real PostgreSQL 17 de acceso denegado para anon/authenticated y RPC privilegiada; service_role puede operar.
 - Decisiones de presupuesto documentadas en MEMORY.md (umbral 4.75, timeout post-envio conciliado, no liberar sin certeza, reserva por fallback, registro de exceso, bloqueo futuro).
 - Validaciones: lint, typecheck, test y build exitosos.
+
+## 2026-10-13 - T-004-6: pruebas focalizadas de integracion (Fase 4)
+
+- tests/api/generate.t004-6.test.ts: 12 escenarios A, B, C, D, E, F, G, H, I, J, N, O.
+- Total de pruebas: 299/299.
+- Validaciones: lint, typecheck, test y build exitosos.
+- Hallazgos: compensaciones implementadas; pendiente cierre autorizado.
+- Decision: no comitear aun, esperar revision.
+
+## 2026-10-13 - Reconciliacion T-004-6 (Fase 4)
+
+- src/lib/quota/quotaService.ts: confirmQuota con reintentos acotados.
+- src/lib/budget/budgetService.ts: confirmBudget con reintentos acotados.
+- src/lib/ai/orchestrator.ts: consumeUnknown conservador si confirmBudget falla.
+- supabase/migrations/015_reconcile_successful_quota.sql: expire_pending_reservations protege generaciones exitosas.
+- supabase/migrations/016_reconcile_budget_reservations.sql: reconcile_pending_budget_reservations idempotente.
+- Total: 299/299. Sin commit; espera revision.
+
+## 2026-10-13 — T-004-6: Integracion en /api/generate
+
+- Integrado en src/app/api/generate/route.ts y src/lib/ai/descriptionService.ts.
+- Flujo con visitor ID, rate limit por IP, cuota, presupuesto, orquestador, fallback, compensaciones y registro.
+- Cuota: reserva antes, liberacion si todos los proveedores fallan; confirmacion solo despues de generacion exitosa.
+- Presupuesto: reserva por proveedor de pago, confirmacion con costo real/estimado; no se libera consumo desconocido.
+- Reconciliacion: expiracion no decrementa reservas ligadas a generation_records.success; confirmacion idempotente post-budget; recuperacion conservadora.
+- Validacion local: lint/typecheck/test/build. Resultado exacto: 299 aprobadas y 4 omitidas; no se presenta como validacion completa.
+- Prueba PostgreSQL automatizada de reconciliacion en describe.skip por transporte/infraestructura local; SQL validado manualmente en PostgreSQL 17.
+- Riesgo bloqueante de produccion: generacion correcta con falla de generation_records y confirmQuota puede provocar liberacion incorrecta de cuota.
+- Riesgo obligatorio para T-004-7: resolucion de pruebas automaticas, proteccion persistente para resultados inciertos, concurrencia y recuperacion tras reinicio.
+- Estado: implementado y committeado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.

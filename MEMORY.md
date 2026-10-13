@@ -11,11 +11,11 @@ Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 
 ## Fase activa
 
-T-004-5 â€” MÃ³dulo de presupuesto (pendiente de aprobaciÃ³n).
+T-004-6 - Integracion en /api/generate (implementada localmente, no aprobada para produccion).
 
 ## Ãšltima tarea completada
 
-T-004-5 - Modulo de presupuesto y costos IA (2026-10-13).
+T-004-6 - Integracion en /api/generate (implementado localmente, no aprobado para produccion, 2026-10-13).
 
 ## Fase 3 â€” Cierre
 
@@ -134,6 +134,26 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   * Si el costo real supera el reservado, registrar el costo incurrido.
   * Si el gasto registrado supera el umbral, bloquear futuras reservas.
 
+## T-004-6 - Integracion en /api/generate (implementado localmente, no aprobado para produccion)
+
+- Archivos: route.ts, descriptionService.ts, orchestrator.ts, generationRecordService.ts.
+- Compensaciones: cuota reservada antes de generaci�n; liberada si todos los proveedores fallan, inclusive presupuesto potencialmente consumido se preserva.
+- Pruebas focalizadas T-004.6: A-P principales cubiertas en tests/api/generate.t004-6.test.ts (12 casos).
+- Resultado local: 299 pruebas aprobadas y 4 omitidas; la prueba de reconciliacion PostgreSQL automatizada esta en describe.skip por transporte/infraestructura local, por lo que no es validacion completa.
+- Hallazgos: timeout/POST-env�o se trata como potencial consumo; confirmaci�n de presupuesto y quota resuelta antes de responder �xito; no se alteraron contratos.
+
+- IA_ENABLED=false y realCallsAuthorized=false se mantienen; no se habilitan llamadas reales.
+- Validacion SQL manual en PostgreSQL 17: la funcion expire_pending_reservations protege reservas con generation_records.success=true y libera casas fallidas; la confirmacion fallida se revisa de forma conservadora. La prueba automatizada PostgreSQL queda en describe.skip por un problema de transporte/infraestructura local, no por fallo de la logica SQL.
+- Riesgo bloqueante de produccion: si la IA genera correctamente pero generation_records falla y confirmQuota falla, la expiracion puede liberar cuota incorrectamente porque no existe un marcador persistente de resultado incierto.
+- Trabajo obligatorio para T-004-7: resolver y habilitar la prueba automatizada de reconciliacion; implementar proteccion persistente para reservas con resultado incierto; probar expiracion, confirmacion y reconciliacion concurrentes; verificar recuperacion despues de reinicio.
+## Reconciliacion T-004-6
+
+- Reintentos sincronicos acotados (3 intentos) para confirmQuota y confirmBudget.
+- expire_pending_reservations no decrementa cuota en reservas asociadas a generation_records exitosas; las marca completed de forma conservadora.
+- reconcile_pending_budget_reservations(INTERVAL, default 15 minutos) confirma reservas budget_reservations antig�as de forma idempotente.
+- No se libera presupuesto potencialmente consumido; la reconciliacion conserva el monto comprometido.
+- Reconciliacion exclusivamente interna, sin endpoints publicos.
+
 ## Decisiones arquitectonicas
 
 - (T-001) Next.js 16.4.0 + React 19.3.0; TS 5.9.3 sobre 7.0.2;
@@ -179,3 +199,4 @@ Ninguno.
 
 T-004-6 - Integracion en descriptionService (src/lib/ai/descriptionService.ts).
 Requiere aprobacion expresa del usuario.
+

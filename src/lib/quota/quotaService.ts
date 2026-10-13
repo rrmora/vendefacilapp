@@ -81,28 +81,42 @@ export async function reserveQuota(visitorId: string): Promise<QuotaReservationR
 }
 
 export async function confirmQuota(reservationId: string): Promise<QuotaConfirmationResult> {
-  try {
-    const result = await callRpc<{
-      status: string;
-      previous_status?: string;
-    }>('confirm_quota', {
-      p_reservation_id: reservationId,
-    });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const result = await callRpc<{
+        status: string;
+        previous_status?: string;
+      }>('confirm_quota', {
+        p_reservation_id: reservationId,
+      });
 
-    if (result.status === 'confirmed') {
-      return { status: 'confirmed' };
+      if (result.status === 'confirmed') {
+        return { status: 'confirmed' };
+      }
+
+      if (result.status === 'already_processed') {
+        return { status: 'already_processed', previousStatus: result.previous_status! };
+      }
+
+      return { status: 'not_found' };
+    } catch (error) {
+      if (attempt === 3) {
+        throw new QuotaServiceError(
+          `No se pudo confirmar cuota: ${error instanceof Error ? error.message : 'error desconocido'}`
+        );
+      }
+
+      await delay(50 * attempt);
     }
-
-    if (result.status === 'already_processed') {
-      return { status: 'already_processed', previousStatus: result.previous_status! };
-    }
-
-    return { status: 'not_found' };
-  } catch (error) {
-    throw new QuotaServiceError(
-      `No se pudo confirmar cuota: ${error instanceof Error ? error.message : 'error desconocido'}`
-    );
   }
+
+  throw new QuotaServiceError('No se pudo confirmar cuota: error desconocido');
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 export async function releaseQuota(reservationId: string): Promise<QuotaReleaseResult> {

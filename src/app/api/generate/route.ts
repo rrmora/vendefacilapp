@@ -48,11 +48,45 @@ export async function POST(request: Request): Promise<Response> {
     });
   }
 
-  const { response, status } = await generateDescription(parsed.data, {
+  const { generateVisitorId, isValidVisitorId } = await import(
+    '@/lib/visitors/visitorService'
+  );
+  const { extractClientIp } = await import('@/lib/ratelimit/rateLimiter');
+
+  const cookieHeader = request.headers.get('cookie') ?? '';
+  const visitorMatch = cookieHeader.match(/(?:^|;\\s*)visitor_id=([^;]+)/);
+  const decodedVisitor = visitorMatch
+    ? decodeURIComponent(visitorMatch[1])
+    : null;
+  const existingVisitorId =
+    decodedVisitor && isValidVisitorId(decodedVisitor)
+      ? decodedVisitor
+      : null;
+  const visitorId = existingVisitorId ?? generateVisitorId();
+  const shouldSetVisitorCookie = !existingVisitorId;
+  const clientIp = extractClientIp(request);
+
+  const result = await generateDescription(parsed.data, {
     signal: request.signal,
+    visitorId,
+    clientIp,
   });
 
-  return NextResponse.json(response, { status });
+  const response = NextResponse.json(result.response, {
+    status: result.status,
+  });
+
+  if (shouldSetVisitorCookie) {
+    response.cookies.set('visitor_id', visitorId, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 365,
+    });
+  }
+
+  return response;
 }
 
 export async function GET(): Promise<Response> {

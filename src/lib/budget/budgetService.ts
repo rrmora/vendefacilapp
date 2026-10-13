@@ -230,50 +230,65 @@ export async function confirmBudget(request: {
     ? Math.max(0, request.actualCostUsd)
     : 0;
 
-  try {
-    const result = await callRpc<{
-      status: string;
-      month?: string;
-      reserved_cost_usd?: number;
-      actual_cost_usd?: number;
-      cost_estimated?: boolean;
-      previous_status?: string;
-    }>('confirm_budget', {
-      p_reservation_id: request.reservationId,
-      p_actual_cost_usd: actualCostUsd,
-      p_cost_estimated: Boolean(request.costEstimated),
-    });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const result = await callRpc<{
+        status: string;
+        month?: string;
+        reserved_cost_usd?: number;
+        actual_cost_usd?: number;
+        cost_estimated?: boolean;
+        previous_status?: string;
+      }>('confirm_budget', {
+        p_reservation_id: request.reservationId,
+        p_actual_cost_usd: actualCostUsd,
+        p_cost_estimated: Boolean(request.costEstimated),
+      });
 
-    if (result.status === 'confirmed') {
-      return {
-        status: 'confirmed',
-        month: result.month ?? getBudgetMonth(),
-        reservedCostUsd: result.reserved_cost_usd ?? 0,
-        actualCostUsd: result.actual_cost_usd ?? actualCostUsd,
-        costEstimated: Boolean(result.cost_estimated),
-      };
-    }
+      if (result.status === 'confirmed') {
+        return {
+          status: 'confirmed',
+          month: result.month ?? getBudgetMonth(),
+          reservedCostUsd: result.reserved_cost_usd ?? 0,
+          actualCostUsd: result.actual_cost_usd ?? actualCostUsd,
+          costEstimated: Boolean(result.cost_estimated),
+        };
+      }
 
-    if (result.status === 'already_processed') {
-      return {
-        status: 'already_processed',
-        previousStatus: result.previous_status ?? 'unknown',
-      };
-    }
+      if (result.status === 'already_processed') {
+        return {
+          status: 'already_processed',
+          previousStatus: result.previous_status ?? 'unknown',
+        };
+      }
 
-    if (result.status === 'not_found') {
-      return { status: 'not_found' };
-    }
+      if (result.status === 'not_found') {
+        return { status: 'not_found' };
+      }
 
-    throw new BudgetServiceError(`Respuesta inesperada de confirm_budget: ${result.status}`);
-  } catch (error) {
-    if (error instanceof BudgetServiceError) {
-      throw error;
+      throw new BudgetServiceError(`Respuesta inesperada de confirm_budget: ${result.status}`);
+    } catch (error) {
+      if (error instanceof BudgetServiceError) {
+        throw error;
+      }
+
+      if (attempt === 3) {
+        throw new BudgetServiceError(
+          `No se pudo confirmar presupuesto: ${error instanceof Error ? error.message : 'error desconocido'}`
+        );
+      }
+
+      await delay(attempt * 50);
     }
-    throw new BudgetServiceError(
-      `No se pudo confirmar presupuesto: ${error instanceof Error ? error.message : 'error desconocido'}`
-    );
   }
+
+  throw new BudgetServiceError('No se pudo confirmar presupuesto: error desconocido');
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 export async function releaseBudget(reservationId: string): Promise<BudgetReleaseResult> {

@@ -24,13 +24,34 @@ export interface OrchestratorError {
 
 export type OrchestratorOutcome = OrchestratorResult | OrchestratorError;
 
+export interface BudgetProviderReservation {
+  reservationId: string;
+  maxCostUsd: number;
+}
+
+export type BudgetControllerResult =
+  | { allowed: true; reservation: BudgetProviderReservation }
+  | { allowed: false; reason: 'budget_exceeded' }
+  | { allowed: false; reason: 'budget_unavailable' };
+
+export interface BudgetController {
+  reserve(provider: string, model: string): Promise<BudgetControllerResult>;
+  confirmReservation(reservationId: string, tokensUsed: number | null, model: string): Promise<void>;
+  consumeUnknown(reservationId: string, model: string): Promise<void>;
+  release(reservationId: string): Promise<void>;
+}
+
 export interface OrchestratorOptions {
   allowPaidProviders?: boolean;
-  onProviderAttempt?: (info: {
+  budgetController?: BudgetController;
+    onProviderAttempt?: (info: {
     provider: string;
+    model: string;
     success: boolean;
     durationMs: number;
     errorKind?: string;
+    result?: AIProviderGenerationResult;
+    budgetReservationId?: string;
   }) => void;
 }
 
@@ -38,6 +59,7 @@ interface ProviderEntry {
   name: string;
   priority: number;
   isPaid: boolean;
+  model: string;
   create: () => IAIProvider;
 }
 
@@ -54,6 +76,7 @@ function getEligibleProviders(allowPaid: boolean): ProviderEntry[] {
         name: p.name,
         priority: p.priority,
         isPaid: p.isPaid,
+        model: p.model,
         create: () => new GeminiProvider(p.apiKey!, p.model),
       });
     } else if (p.name === 'groq') {
@@ -61,6 +84,7 @@ function getEligibleProviders(allowPaid: boolean): ProviderEntry[] {
         name: p.name,
         priority: p.priority,
         isPaid: p.isPaid,
+        model: p.model,
         create: () => new GroqProvider(p.apiKey!, p.model),
       });
     } else if (p.name === 'openai') {
@@ -68,6 +92,7 @@ function getEligibleProviders(allowPaid: boolean): ProviderEntry[] {
         name: p.name,
         priority: p.priority,
         isPaid: p.isPaid,
+        model: p.model,
         create: () => new OpenAIProvider(p.apiKey!, p.model),
       });
     }
@@ -82,6 +107,7 @@ export async function generateWithFallback(
   options: OrchestratorOptions = {}
 ): Promise<OrchestratorOutcome> {
   const allowPaid = options.allowPaidProviders ?? false;
+  const budgetController = options.budgetController;
   const providers = getEligibleProviders(allowPaid);
 
   if (providers.length === 0) {
@@ -117,8 +143,29 @@ export async function generateWithFallback(
 
     const providerStart = Date.now();
     const provider = providerInfo.create();
+    let reservationId: string | null = null;
 
     try {
+      if (budgetController && providerInfo.isPaid) {
+        const budget = await budgetController.reserve(providerInfo.name, providerInfo.model);
+        if (!budget.allowed) {
+          if (budget.reason === 'budget_exceeded') {
+            return {
+              success: false,
+              errorCode: 'BUDGET_EXCEEDED',
+              errorMessage: 'Presupuesto de IA insuficiente.',
+            };
+          }
+          return {
+            success: false,
+            errorCode: 'INTERNAL_ERROR',
+            errorMessage: 'No se pudo verificar el presupuesto.',
+          };
+        }
+
+        reservationId = budget.reservation.reservationId;
+      }
+
       const result = await provider.generate(request, {
         ...context,
         timeoutMs: Math.min(context.timeoutMs, remaining),
@@ -127,9 +174,34 @@ export async function generateWithFallback(
 
       options.onProviderAttempt?.({
         provider: providerInfo.name,
+        model: providerInfo.model,
         success: true,
         durationMs: Date.now() - providerStart,
+        result,
+        budgetReservationId: reservationId ?? undefined,
       });
+
+      if (reservationId && budgetController) {
+        try {
+          await budgetController.confirmReservation(
+            reservationId,
+            result.tokensUsed,
+            providerInfo.model
+          );
+        } catch {
+          try {
+            await budgetController.consumeUnknown(reservationId, providerInfo.model);
+          } catch {
+            // Keep the reservation committed for reconciliation if DB is still unavailable.
+          }
+
+          return {
+            success: false,
+            errorCode: 'INTERNAL_ERROR',
+            errorMessage: 'No se pudo conciliar el presupuesto.',
+          };
+        }
+      }
 
       return {
         success: true,
@@ -139,12 +211,22 @@ export async function generateWithFallback(
     } catch (error) {
       const durationMs = Date.now() - providerStart;
 
+      if (reservationId && budgetController) {
+        try {
+          await budgetController.consumeUnknown(reservationId, providerInfo.model);
+        } catch {
+          // Keep the original error if budget reconciliation fails.
+        }
+      }
+
       if (error instanceof AIProviderError) {
         options.onProviderAttempt?.({
           provider: providerInfo.name,
+          model: providerInfo.model,
           success: false,
           durationMs,
           errorKind: error.kind,
+          budgetReservationId: reservationId ?? undefined,
         });
 
         if (!isRecoverableKind(error.kind)) {
@@ -166,9 +248,11 @@ export async function generateWithFallback(
       } else {
         options.onProviderAttempt?.({
           provider: providerInfo.name,
+          model: providerInfo.model,
           success: false,
           durationMs,
           errorKind: 'UNKNOWN',
+          budgetReservationId: reservationId ?? undefined,
         });
         lastError = new AIProviderError({
           kind: 'PROVIDER_ERROR',
