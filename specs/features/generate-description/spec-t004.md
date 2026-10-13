@@ -430,6 +430,29 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 | D4 | Presupuesto: calculo por modelo con max tokens, fallback, estimacion conservadora | Aprobada |
 | D5 | Cascada AI_ENABLED + realCallsAuthorized + cuota + presupuesto + disponibilidad | Aprobada |
 
+## 10. Rate limiting por IP (T-004-4)
+
+- Límites: 10 solicitudes por minuto, 100 por hora y 500 por ventana
+  móvil de 24 horas (implementados mediante cubetas fijas alineadas por
+  `date_trunc`).
+- Función RPC: `check_rate_limit(INET)`, con `SELECT ... FOR UPDATE` por
+  cubeta. `EXECUTE` revocado a `PUBLIC`.
+- `TRUST_PROXY=false` por defecto; `X-Forwarded-For` solo se interpreta
+  cuando se configura un proxy confiable. En el despliegue actual no hay
+  proxy definido, por lo que la extracción devuelve `null` y el endpoint
+  debe rechazar con fail-closed.
+- IP ausente o inválida: el servicio retorna `invalid_ip`; no se permite
+  generar sin IP verificada.
+- PostgreSQL no disponible: `RateLimiterError` (fail-closed); no se omite
+  el control.
+- Limpieza de registros: `DELETE` de filas con más de 24 horas en cada
+  verificación. Job externo (pg_cron/cron del host) pendiente en T-004-8.
+- Riesgo documentado: la columna `ip_address INET` almacena la IP
+  completa durante la ventana activa. Alternativa futura de HMAC requiere
+  cambiar la columna a `TEXT`/`bytea` y añadir secreto del servidor;
+  no aplicar sin autorización.
+- No integrado todavía en `/api/generate` (T-004-6).
+
 ## 10. Restricciones
 
 - No instalar dependencias hasta aprobacion final.

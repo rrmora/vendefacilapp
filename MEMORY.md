@@ -3,19 +3,19 @@
 ## Estado actual del proyecto
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
-T-004-1, T-004-2, T-004-3A y T-004-3 completadas.
-T-004-4 a T-004-8 pendientes.
+T-004-1, T-004-2, T-004-3A, T-004-3 y T-004-4 completadas.
+T-004-5 a T-004-8 pendientes.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-4 — Módulo de rate limiting (pendiente de aprobación).
+T-004-5 — Módulo de presupuesto (pendiente de aprobación).
 
 ## Última tarea completada
 
-T-004-3 — Módulo de cuota diaria (2026-10-12).
+T-004-4 — Módulo de rate limiting por IP (2026-10-13).
 
 ## Fase 3 — Cierre
 
@@ -90,6 +90,27 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 - Total: 252/252.
 - Pendiente: integrar quotaService en /api/generate (T-004-6).
 
+## T-004-4 — Módulo de rate limiting por IP
+
+- `src/lib/ratelimit/rateLimiter.ts`: `checkRateLimit`, `normalizeIpAddress`,
+  `extractClientIp`, `RateLimiterError`.
+- Función RPC PostgreSQL (`supabase/migrations/012_check_rate_limit.sql`):
+  `check_rate_limit(INET)`. Ventanas fijas por minuto (10), hora (100) y
+  día (500); atomicidad mediante SELECT FOR UPDATE por cubeta.
+- Limpieza de registros con más de 24 horas en cada verificación.
+- Validación defensiva de IPv4/IPv6 con `net.isIP`.
+- Extracción de IP solo con proxy confiable (`TRUST_PROXY`) desde
+  encabezados como `x-real-ip`, `cf-connecting-ip` y último salto válido
+  de `x-forwarded-for`; sin proxy confiable retorna null.
+- Fail-closed: `RateLimiterError` cuando Supabase/RPC falla.
+- Pruebas: 11 unitarias + 2 integración real contra PostgreSQL 17-alpine
+  (20 solicitudes simultáneas: 10 permitidas, 10 rechazadas; IPs
+  independientes).
+- Total: 265/265.
+- Decisiones: retención INET aprobada sin pseudonimización HMAC adicional
+  (requeriría cambio de esquema, no aplicado todavía); rate limiting no
+  integrado en `/api/generate` aún (T-004-6/T-004-7).
+
 ## Decisiones arquitectónicas
 
 - (T-001) Next.js 16.4.0 + React 19.3.0; TS 5.9.3 sobre 7.0.2;
@@ -133,5 +154,5 @@ Ninguno.
 
 ## Siguiente tarea propuesta
 
-T-004-4 — Módulo de rate limiting (`src/lib/ratelimit/rateLimiter.ts`).
-Requiere aprobación explícita del usuario.
+T-004-5 - Modulo de presupuesto (src/lib/budget/budgetService.ts).
+Requiere aprobacion expresa del usuario.

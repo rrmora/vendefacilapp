@@ -337,3 +337,15 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Total: 252/252.
 - Validaciones: lint ✓, typecheck ✓, tests 252/252 ✓, build ✓.
 - Pendiente: integrar en /api/generate (T-004-6).
+
+## 2026-10-13 - T-004-4: Modulo de rate limiting por IP (Fase 4)
+
+- src/lib/ratelimit/rateLimiter.ts: checkRateLimit, normalizeIpAddress, extractClientIp, RateLimiterError.
+- RPC check_rate_limit(INET) en supabase/migrations/012_check_rate_limit.sql con ventanas de 10/min, 100/hora y 500/24h y SELECT FOR UPDATE.
+- Limpieza de registros con mas de 24 horas. Retencion maxima 24h.
+- Validacion de IPv4/IPv6 con net.isIP. Extraccion de IP solo con proxy confiable.
+- Fail-closed mediante RateLimiterError.
+- Pruebas: 11 unitarias + 2 reales de concurrencia PostgreSQL 17-alpine (20 simultaneas).
+- Total: 265/265.
+- Validaciones: lint, typecheck, test y build exitosos.
+- Pendiente: integracion en /api/generate (T-004-6) y HMAC de IP opcional (cambio de esquema).
