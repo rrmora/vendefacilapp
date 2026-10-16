@@ -446,3 +446,17 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - MEMORY.md estaba doblemente codificado en UTF-8 (mojibake) y con caracteres perdidos en 4 lineas; se repararon 61 lineas.
 - Mensajes al usuario corruptos en src/lib/ai/orchestrator.ts y src/lib/ai/descriptionService.ts restaurados.
 - Sin cambios de comportamiento.
+
+## 2026-10-13 — T-004-7A: rate limiting con ventana movil real
+
+- supabase/migrations/018_sliding_window_rate_limit.sql (nueva): tabla ip_rate_limit_events con una fila por solicitud aceptada, indice (ip_address, accepted_at DESC) y RLS activo sin politicas.
+- check_rate_limit(INET) reescrita con ventanas moviles (t - W, t] de 60, 3600 y 86400 segundos y limites 10/100/500; las solicitudes rechazadas no se registran.
+- Serializacion por IP con pg_advisory_xact_lock(hashtextextended(ip, 0)) y reloj capturado una sola vez con clock_timestamp() despues del bloqueo.
+- Contrato JSON sin cambios: rateLimiter.ts no se modifico y se agregaron pruebas que fijan el nombre de la RPC y sus parametros.
+- SET search_path = public, pg_temp; EXECUTE revocado a PUBLIC, anon y authenticated y concedido a service_role.
+- Migraciones 005 y 012 intactas; la tabla legada ip_rate_limits se conserva sin escritores.
+- Pruebas nuevas: 9 de ventana movil (20 concurrentes = 10 aceptadas y 10 rechazadas, cruce de minuto de calendario, fronteras exactas de 60 s, limites moviles de hora y dia, counts, retry_after_seconds, expiracion a 24 h, IPs independientes) y 5 de permisos/RLS en tiempo de ejecucion; 9 estaticas de la migracion 018; 2 de contrato en rateLimiter.test.ts.
+- La prueba de rafaga ya no requiere alinearse al inicio de un minuto.
+- Total: 345/345. Lint, typecheck y build exitosos. 12/12 corridas completas de pnpm test en verde.
+- Pendiente: la limpieza global de eventos antiguos y la reconciliacion de reservas requieren el job periodico que sigue sin implementarse.
+- Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.

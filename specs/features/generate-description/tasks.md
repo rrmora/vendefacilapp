@@ -61,6 +61,7 @@ aceptación, validaciones.
   - T-004-5: Módulo de presupuesto ✅
   - T-004-6: Integración en descriptionService ✅ (local, pendiente de aprobación)
   - T-004-7: Pruebas de integración y concurrencia ✅ (local, pendiente de aprobación)
+  - T-004-7A: Rate limiting con ventana móvil real ✅ (local, pendiente de aprobación)
   - T-004-8: Documentación y validación final (pendiente)
 
 ## T-005 — (Eliminado — duplicado de T-004)

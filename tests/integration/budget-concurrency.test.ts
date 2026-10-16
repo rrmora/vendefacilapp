@@ -41,7 +41,7 @@ describe('budget concurrency integration', () => {
 
     let ready = false;
     let consecutive = 0;
-    for (let i = 0; i < 90 && consecutive < 3; i++) {
+    for (let i = 0; i < 120 && consecutive < 3; i++) {
       // El entrypoint de postgres levanta un servidor efimero para el setup y luego
       // lo reinicia: una consulta real exige 3 respuestas seguidas para confirmar
       // que el servidor quedo estable.
@@ -70,7 +70,7 @@ describe('budget concurrency integration', () => {
       const remotePath = `/tmp/${file}`;
       exec(`docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -v ON_ERROR_STOP=1 -f ${remotePath}`);
     }
-  }, 180000);
+  }, 300000);
 
   afterAll(() => {
     try {

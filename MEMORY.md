@@ -4,21 +4,21 @@
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
-T-004-7 implementada localmente con cierre técnico validado (10/10 corridas
-completas de `pnpm test` en verde); T-004-8 pendiente y sin iniciar.
+T-004-7 y T-004-7A implementadas localmente (345/345, 12/12 corridas completas de
+`pnpm test` en verde); T-004-8 pendiente y sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-7 - Pruebas de integración y concurrencia (implementada localmente, no aprobada para producción).
+T-004-7A - Rate limiting con ventana móvil real (implementada localmente, no aprobada para producción).
 
 ## Última tarea completada
 
-T-004-7 - Pruebas de integración y concurrencia, con cierre técnico de la prueba
-intermitente de rate limiting (implementada localmente, no aprobada para producción,
-2026-10-13).
+T-004-7A - Rate limiting con ventana móvil real mediante registro de eventos
+aceptados y bloqueo transaccional por IP (implementada localmente, no aprobada
+para producción, 2026-10-13).
 
 ## Fase 3 — Cierre
 
@@ -219,19 +219,51 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 - Límites de producción (10/100/500) y lógica SQL NO fueron modificados.
 
 **Pendiente / riesgos**
-- Riesgo abierto: las cubetas de calendario no equivalen a una ventana móvil de 60 s.
-  Una IP puede recibir hasta 20 solicitudes en ~1 s cruzando el cambio de minuto. La
-  prueba `las cubetas son de calendario` deja el comportamiento explícito. Corregirlo
-  requiere una migración SQL autorizada (ventana móvil real).
-- Discrepancia documental: el comentario de la migración 005 y su cabecera dicen
-  "sliding window", pero la implementación son cubetas fijas. No se alteró una
-  migración ya aplicada; la semántica real quedó documentada en la sección 10 de
-  `specs/features/generate-description/spec-t004.md`.
+- Resuelto en T-004-7A: el límite de 10 por cualquier intervalo móvil de 60 s.
 - PENDIENTE: mecanismo automático de reconciliación de reservas. No existe un job
   que invoque periódicamente `expire_pending_reservations()` ni
   `reconcile_pending_budget_reservations()`; hoy la consolidación solo es reactiva y
   las reservas `pending` vencidas y de presupuesto antiguas permanecen sin consolidar
   hasta que se programe.
+
+## T-004-7A - Rate limiting con ventana movil real (local, no aprobado para produccion)
+
+- `supabase/migrations/018_sliding_window_rate_limit.sql` (nueva; 005 y 012 intactas).
+- Tabla `ip_rate_limit_events (id, ip_address INET, accepted_at TIMESTAMPTZ)` con
+  indice `(ip_address, accepted_at DESC)`; una fila por solicitud ACEPTADA.
+- `CREATE OR REPLACE FUNCTION public.check_rate_limit(INET)`: ventanas moviles
+  `(t - W, t]` de 60 s, 3600 s y 86400 s con limites 10/100/500.
+  - Serializacion por IP con `pg_advisory_xact_lock(hashtextextended(ip::text, 0))`.
+  - `v_now := clock_timestamp()` capturado una sola vez DESPUES del bloqueo.
+  - Orden de evaluacion 60 s -> 3600 s -> 86400 s; se reporta la primera violada.
+  - `retry_after_seconds = ceil(mas antiguo de la ventana + W - t)`, minimo 1.
+  - Las solicitudes rechazadas no se registran.
+  - `SET search_path = public, pg_temp`; `EXECUTE` revocado a PUBLIC/anon/authenticated
+    y concedido a service_role; RLS activo en la tabla nueva sin politicas.
+  - Limpieza acotada a la IP en el hot path (`> 24 h`); la limpieza GLOBAL de eventos
+    requiere el job pendiente.
+- Contrato JSON identico: `rateLimiter.ts` no se modifico; se agregaron pruebas que
+  fijan el nombre de la RPC y sus parametros.
+- Migraciones 005 y 012 sin modificar; la tabla legada `ip_rate_limits` se conserva
+  sin escritores.
+- Pruebas nuevas (21): 9 de ventana movil (20 concurrentes = 10/10, cruce de minuto,
+  fronteras exactas de 60 s, limites moviles de hora y dia, counts, retry_after,
+  expiracion a 24 h, IPs independientes) y 5 de permisos/RLS en tiempo de ejecucion;
+  9 estaticas de la migracion 018; 2 de contrato en `rateLimiter.test.ts`.
+- La prueba de rafaga ya no necesita alinearse al inicio de un minuto: con ventana
+  movil el cruce de calendario es irrelevante.
+- Total: 345/345. Lint, typecheck y build exitosos. 12/12 corridas completas de
+  `pnpm test` en verde.
+- Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
+  realCallsAuthorized=false.
+
+**Pendiente / riesgos (T-004-7A)**
+- Sin job de limpieza, los eventos de IPs que dejan de volver no se eliminan: la tabla
+  crece. Se estiman hasta 500 filas por IP y dia con retencion de 24 h.
+- Los limites de hora y dia son ahora mas estrictos en las fronteras (sin rafaga);
+  es intencional y esta documentado.
+- `ip_rate_limits` queda sin escritores; si alguna herramienta externa la leyera,
+  veria datos obsoletos.
 
 ## Decisiones arquitectonicas
 
@@ -273,15 +305,16 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 ## Bloqueos
 
 **Bloqueantes de producción (Fase 4):**
-1. Límite de 10 solicitudes por cualquier intervalo móvil de 60 segundos NO
-   implementado; las cubetas fijas de calendario permiten ráfagas de hasta 20
-   solicitudes alrededor del cambio de minuto. Requiere migración SQL autorizada.
-2. T-004-6 y T-004-7 implementadas y validadas localmente (324/324), pero sin
-   aprobación para producción. `AI_ENABLED=false` y `realCallsAuthorized=false`.
+1. T-004-6, T-004-7 y T-004-7A implementadas y validadas localmente (345/345),
+   pero sin aprobación para producción. `AI_ENABLED=false` y
+   `realCallsAuthorized=false`.
+2. Limpieza automática ausente: sin job periódico, los eventos de
+   `ip_rate_limit_events` de IPs que no regresan no se eliminan y las reservas de
+   cuota y presupuesto no se consolidan.
 
 **Pendientes:**
-1. Mecanismo automático de reconciliación de reservas (job periódico).
-2. Verificación del estado del modelo predeterminado de Groq.
+1. Mecanismo automático de reconciliación de reservas y de limpieza de eventos.
+2. Verificación del modelo predeterminado de Groq.
 
 ## Siguiente tarea propuesta
 

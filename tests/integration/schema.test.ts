@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 17 archivos SQL', () => {
+    it('contiene 18 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(17);
+      expect(files).toHaveLength(18);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -34,6 +34,7 @@ describe('schema migrations', () => {
       expect(files[14]).toMatch(/^015_/);
       expect(files[15]).toMatch(/^016_/);
       expect(files[16]).toMatch(/^017_/);
+      expect(files[17]).toMatch(/^018_/);
     });
   });
 
@@ -148,6 +149,69 @@ describe('schema migrations', () => {
       expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.mark_quota_sent(UUID) FROM anon");
       expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.mark_quota_sent(UUID) FROM authenticated");
       expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.mark_quota_sent(UUID) TO service_role');
+    });
+  });
+
+  describe('migracion 018 rate limit con ventana movil', () => {
+    const sql = readMigration('018_sliding_window_rate_limit.sql');
+
+    it('crea la tabla de eventos aceptados', () => {
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.ip_rate_limit_events');
+      expect(sql).toContain('ip_address INET NOT NULL');
+      expect(sql).toContain('accepted_at TIMESTAMPTZ NOT NULL');
+    });
+
+    it('crea el indice compuesto por IP y ventana', () => {
+      expect(sql).toContain('ON public.ip_rate_limit_events (ip_address, accepted_at DESC)');
+    });
+
+    it('activa RLS sin tocar la tabla legada', () => {
+      expect(sql).toContain('ALTER TABLE public.ip_rate_limit_events ENABLE ROW LEVEL SECURITY');
+      expect(sql).not.toContain('DROP TABLE');
+      expect(sql).not.toContain('ALTER TABLE public.ip_rate_limits');
+      expect(sql).not.toContain('DELETE FROM public.ip_rate_limits');
+    });
+
+    it('serializa por IP con bloqueo consultivo transaccional', () => {
+      expect(sql).toContain('pg_advisory_xact_lock');
+      expect(sql).toContain('hashtextextended');
+    });
+
+    it('captura el reloj una sola vez despues del bloqueo', () => {
+      expect(sql.match(/v_now := clock_timestamp\(\);/g)).toHaveLength(1);
+      expect(sql.indexOf('PERFORM pg_catalog.pg_advisory_xact_lock')).toBeLessThan(
+        sql.indexOf('v_now := clock_timestamp();')
+      );
+    });
+
+    it('usa ventanas moviles de 60, 3600 y 86400 segundos', () => {
+      expect(sql).toContain("INTERVAL '60 seconds'");
+      expect(sql).toContain("INTERVAL '3600 seconds'");
+      expect(sql).toContain("INTERVAL '86400 seconds'");
+      expect(sql).toContain('> v_now - INTERVAL');
+    });
+
+    it('mantiene los limites 10, 100 y 500 y el contrato JSON', () => {
+      expect(sql).toContain('v_minute >= 10');
+      expect(sql).toContain('v_hour >= 100');
+      expect(sql).toContain('v_day >= 500');
+      expect(sql).toContain("'status', 'allowed'");
+      expect(sql).toContain("'counts', json_build_object(");
+      expect(sql).toContain("'limits', json_build_object(");
+      expect(sql).toContain("'retry_after_seconds', v_retry_seconds");
+    });
+
+    it('fija un search_path seguro y restringe EXECUTE', () => {
+      expect(sql).toContain('SET search_path = public, pg_temp');
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.check_rate_limit(INET) FROM PUBLIC');
+      expect(sql).toContain("REVOKE ALL ON TABLE public.ip_rate_limit_events FROM anon");
+      expect(sql).toContain("REVOKE ALL ON TABLE public.ip_rate_limit_events FROM authenticated");
+      expect(sql).toContain("GRANT EXECUTE ON FUNCTION public.check_rate_limit(INET) TO service_role");
+    });
+
+    it('documenta que la limpieza global requiere el job pendiente', () => {
+      expect(sql).toContain('job de limpieza');
+      expect(sql).toContain('DELETE FROM public.ip_rate_limit_events');
     });
   });
 

@@ -134,5 +134,41 @@ describe('rateLimiter', () => {
 
       await expect(checkRateLimit('198.51.100.10')).rejects.toThrow(RateLimiterError);
     });
+
+    it('invoca la RPC check_rate_limit con el contrato esperado', async () => {
+      const mockClient = createMockClient({
+        status: 'allowed',
+        counts: { minute: 1, hour: 1, day: 1 },
+        limits: { minute: 10, hour: 100, day: 500 },
+      });
+      setSupabaseClient(mockClient);
+
+      await checkRateLimit('198.51.100.10');
+
+      expect(mockClient.rpc).toHaveBeenCalledWith('check_rate_limit', {
+        p_ip_address: '198.51.100.10',
+      });
+    });
+
+    it('mapea el rejection de la ventana movil sin alterar el contrato', async () => {
+      const mockClient = createMockClient({
+        status: 'rate_limited',
+        window: 'day',
+        limit: 500,
+        current: 500,
+        retry_after_seconds: 3600,
+      });
+      setSupabaseClient(mockClient);
+
+      const result = await checkRateLimit('198.51.100.10');
+
+      expect(result).toEqual({
+        status: 'rate_limited',
+        window: 'day',
+        limit: 500,
+        current: 500,
+        retryAfterSeconds: 3600,
+      });
+    });
   });
 });

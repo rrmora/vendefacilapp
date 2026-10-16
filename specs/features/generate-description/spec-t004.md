@@ -430,21 +430,39 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 | D4 | Presupuesto: calculo por modelo con max tokens, fallback, estimacion conservadora | Aprobada |
 | D5 | Cascada AI_ENABLED + realCallsAuthorized + cuota + presupuesto + disponibilidad | Aprobada |
 
-## 10. Rate limiting por IP (T-004-4)
+## 10. Rate limiting por IP (T-004-4, T-004-7A)
 
-- Límites: 10 solicitudes por minuto, 100 por hora y 500 por día.
-- **Ventanas fijas de calendario, NO ventanas móviles.** La implementación
-  usa cubetas alineadas con `date_trunc('minute'|'hour'|'day', NOW())` sobre
-  la tabla `ip_rate_limits` (`ip_address`, `window_start`, `request_count`).
-  Cada verificación opera únicamente sobre la cubeta del instante actual; las
-  cubetas anteriores no se suman.
-- Consecuencia asumida: al cruzar un cambio de cubeta el contador se reinicia,
-  por lo que una misma IP puede recibir hasta 20 solicitudes en aproximadamente
-  un segundo (10 al final de una cubeta y 10 al inicio de la siguiente). El
-  límite de 10 por minuto es por cubeta de calendario, no por cualquier
-  intervalo móvil de 60 segundos.
-- Función RPC: `check_rate_limit(INET)`, con `SELECT ... FOR UPDATE` por
-  cubeta. `EXECUTE` revocado a `PUBLIC`.
+- Límites: 10 solicitudes por 60 s, 100 por 3600 s y 500 por 86400 s.
+- **Ventanas móviles reales (T-004-7A).** La RPC `check_rate_limit(INET)` ya no
+  usa cubetas de calendario. Registra una fila por solicitud **aceptada** en
+  `ip_rate_limit_events` (`ip_address INET`, `accepted_at TIMESTAMPTZ`, índice
+  `(ip_address, accepted_at DESC)`) y decide contando los eventos dentro de
+  cada ventana. Las solicitudes rechazadas no se registran.
+- Semántica: para una solicitud evaluada en el instante `t`, la ventana es
+  `(t - W, t]` (abierta a la izquierda, cerrada a la derecha). Se acepta si las
+  aceptadas dentro de la ventana son menores al límite; en caso contrario se
+  rechaza. Invariante: en todo instante, cualquier intervalo de 60 s contiene
+  como máximo 10 solicitudes aceptadas de una misma IP.
+- Instante límite: una aceptación hecha en `t0` deja de contar exactamente en
+  `t0 + 60 s`; en ese instante una nueva solicitud sí se acepta.
+- Simultáneas: las decisiones se serializan por IP con
+  `pg_advisory_xact_lock(hashtextextended(ip, 0))`, de modo que de N solicitudes
+  concurrentes se aceptan exactamente `min(N, 10 - A)`, sin depender del orden
+  de llegada. El bloqueo se libera solo al confirmar, deshacer o lanzar
+  excepción.
+- `v_now := clock_timestamp()` se captura **una sola vez y después** de adquirir
+  el bloqueo, para que la espera en cola no altere la ventana evaluada.
+- Orden de evaluación: 60 s → 3600 s → 86400 s; se reporta la primera ventana
+  violada. El contrato JSON no cambió (`status`, `window`, `limit`, `current`,
+  `retry_after_seconds`, `counts`, `limits`), por lo que
+  `src/lib/ratelimit/rateLimiter.ts` no requirió cambios.
+- `SET search_path = public, pg_temp` en la función. `EXECUTE` revocado a
+  `PUBLIC`, `anon` y `authenticated`; concedido a `service_role`. RLS activo
+  en `ip_rate_limit_events` sin políticas (solo el servidor opera).
+- La tabla legada `ip_rate_limits` y las migraciones `005` y `012` se conservan
+  sin modificar; `ip_rate_limits` queda sin escritores. El comentario de `005`
+  menciona "sliding window": en la implementación original era inexacto y en la
+  actual sí describe el comportamiento.
 - `TRUST_PROXY=false` por defecto; `X-Forwarded-For` solo se interpreta
   cuando se configura un proxy confiable. En el despliegue actual no hay
   proxy definido, por lo que la extracción devuelve `null` y el endpoint
@@ -453,37 +471,33 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
   generar sin IP verificada.
 - PostgreSQL no disponible: `RateLimiterError` (fail-closed); no se omite
   el control.
-- Limpieza de registros: `DELETE` de filas con más de 24 horas en cada
-  verificación. Job externo (pg_cron/cron del host) pendiente en T-004-8.
+- Limpieza: cada verificación elimina únicamente los eventos de esa IP con más
+  de 24 horas (barrido acotado por índice). **La limpieza global de eventos
+  antiguos requiere el job externo pendiente (pg_cron/cron del host), igual que
+  la reconciliación de reservas.**
 - Riesgo documentado: la columna `ip_address INET` almacena la IP
   completa durante la ventana activa. Alternativa futura de HMAC requiere
   cambiar la columna a `TEXT`/`bytea` y añadir secreto del servidor;
   no aplicar sin autorización.
-- El comentario de `005_create_ip_rate_limits.sql` menciona "sliding
-  window"; se conserva sin modificar por tratarse de una migración ya
-  aplicada. La semántica real es la descrita en esta sección.
 - No integrado todavía en `/api/generate` (T-004-6).
 
 ## 11. Bloqueantes de producción (Fase 4)
 
-- **BLOQUEANTE — límite de 10 solicitudes por cualquier intervalo móvil de
-  60 segundos.** La garantía solicitada no está implementada: las cubetas de
-  calendario permiten ráfagas de hasta 20 solicitudes alrededor del cambio de
-  minuto. Corregirlo requiere una migración SQL autorizada que remplace la
-  lógica de cubetas por conteo de eventos en ventana móvil; no se modifica
-  `012_check_rate_limit.sql` sin autorización expresa.
-- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7.** La
-  integración en `/api/generate` y la protección persistente de resultado
-  incierto están implementadas y validadas localmente (324/324), pero no
-  aprobadas para producción. `AI_ENABLED=false` y `realCallsAuthorized=false`
-  se mantienen.
+- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A.** La
+  integración en `/api/generate`, la protección persistente de resultado
+  incierto y el rate limit de ventana móvil están implementados y validados
+  localmente (345/345), pero no aprobados para producción. `AI_ENABLED=false` y
+  `realCallsAuthorized=false` se mantienen.
+- **BLOQUEANTE — limpieza automática ausente.** Sin un job periódico, los
+  eventos de `ip_rate_limit_events` de IPs que dejan de volver no se eliminan
+  (la RPC solo limpia la IP que consulta) y tampoco se consolidan las reservas
+  de cuota ni de presupuesto. Afecta crecimiento de tabla y liberación tardía
+  de cuota.
 - **PENDIENTE — mecanismo automático de reconciliación de reservas.** No
   existe un job que invoque periódicamente `expire_pending_reservations()` y
   `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre
   de forma reactiva; las reservas `pending` vencidas y las reservas de
   presupuesto antiguas permanecen sin consolidar hasta que se programe el job.
-  Sin él, las cuotas se liberan tarde y las reservas inciertas se conservan de
-  forma conservadora pero indefinida.
 - **PENDIENTE — verificación del estado del modelo predeterminado de Groq**
   (fase T-003A).
 
