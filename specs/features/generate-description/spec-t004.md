@@ -106,6 +106,11 @@ generaciones exitosas. `reserve_quota` incrementa al reservar;
 `expire_pending_reservations` decrementan unicamente reservas que
 realmente estaban pendientes.
 
+`expire_pending_reservations` agrupa las reservas vencidas por
+`(visitor_id, quota_date)` antes de ajustar `visitor_daily_quota`, de modo que
+un lote libera una unidad por reserva. Antes de T-004-8.1 solo se liberaba una
+unidad por lote del mismo visitante y fecha.
+
 Maximo 5 unidades de cuota ocupadas y 3 reservas pendientes
 simultaneas por visitante.
 
@@ -483,11 +488,11 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 
 ## 11. Bloqueantes de producción (Fase 4)
 
-- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A.** La
-  integración en `/api/generate`, la protección persistente de resultado
-  incierto y el rate limit de ventana móvil están implementados y validados
-  localmente (345/345), pero no aprobados para producción. `AI_ENABLED=false` y
-  `realCallsAuthorized=false` se mantienen.
+- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A/T-004-8.1.**
+  La integración en `/api/generate`, la protección persistente de resultado
+  incierto, el rate limit de ventana móvil y la corrección de expiración de cuota
+  están implementados y validados localmente (354/354), pero no aprobados para
+  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
 - **BLOQUEANTE — limpieza automática ausente.** Sin un job periódico, los
   eventos de `ip_rate_limit_events` de IPs que dejan de volver no se eliminan
   (la RPC solo limpia la IP que consulta) y tampoco se consolidan las reservas
@@ -498,6 +503,10 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
   `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre
   de forma reactiva; las reservas `pending` vencidas y las reservas de
   presupuesto antiguas permanecen sin consolidar hasta que se programe el job.
+- **PENDIENTE — `reconcile_pending_budget_reservations` corrige el mismo defecto
+  de `UPDATE ... FROM` (T-004-8.2).** Con varias reservas vencidas del mismo mes
+  el gasto se subcuenta y `reserved_usd` queda inflado. No se debe activar el
+  proceso programado antes de corregirlo.
 - **PENDIENTE — verificación del estado del modelo predeterminado de Groq**
   (fase T-003A).
 

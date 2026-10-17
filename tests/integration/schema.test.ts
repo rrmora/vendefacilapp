@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 18 archivos SQL', () => {
+    it('contiene 19 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(18);
+      expect(files).toHaveLength(19);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -35,6 +35,7 @@ describe('schema migrations', () => {
       expect(files[15]).toMatch(/^016_/);
       expect(files[16]).toMatch(/^017_/);
       expect(files[17]).toMatch(/^018_/);
+      expect(files[18]).toMatch(/^019_/);
     });
   });
 
@@ -212,6 +213,44 @@ describe('schema migrations', () => {
     it('documenta que la limpieza global requiere el job pendiente', () => {
       expect(sql).toContain('job de limpieza');
       expect(sql).toContain('DELETE FROM public.ip_rate_limit_events');
+    });
+  });
+
+  describe('migracion 019 correccion de expiracion de cuota', () => {
+    const sql = readMigration('019_fix_quota_expiration.sql');
+
+    it('conserva la firma sin parametros y el retorno INTEGER', () => {
+      expect(sql).toContain(
+        'CREATE OR REPLACE FUNCTION public.expire_pending_reservations() RETURNS INTEGER'
+      );
+      expect(sql).toContain('RETURN v_expired_count;');
+    });
+
+    it('agrupa las reservas expiradas por visitor_id y quota_date', () => {
+      expect(sql).toContain('COUNT(*)::INTEGER AS units');
+      expect(sql).toContain('GROUP BY visitor_id, quota_date');
+      expect(sql).toContain('SET generations_used = GREATEST(q.generations_used - r.units, 0)');
+      expect(sql).toContain("(created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date");
+    });
+
+    it('nunca libera sent_uncertain y conserva la finalizacion conservadora', () => {
+      expect(sql).toContain("WHERE r.status IN ('pending', 'sent_uncertain')");
+      expect(sql).toContain('g.success = TRUE');
+      expect(sql).toContain("WHERE status = 'pending' AND expires_at < NOW()");
+    });
+
+    it('fija un search_path seguro y restringe EXECUTE', () => {
+      expect(sql).toContain('SET search_path = public, pg_temp');
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM PUBLIC');
+      expect(sql).toContain(
+        "REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM anon"
+      );
+      expect(sql).toContain(
+        "REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM authenticated"
+      );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.expire_pending_reservations() TO service_role'
+      );
     });
   });
 

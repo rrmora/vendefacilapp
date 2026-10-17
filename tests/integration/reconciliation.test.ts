@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, exec as execCallback } from 'child_process';
+import { promisify } from 'util';
 import { readdirSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+
+const execAsync = promisify(execCallback);
 
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'supabase', 'migrations');
 const CONTAINER_NAME = 'vendefacil-reconciliation-test';
@@ -68,6 +71,11 @@ describe('reconciliation integration', () => {
       throw new Error('PostgreSQL no se pudo iniciar');
     }
 
+    // Roles de Supabase para verificar permisos en tiempo de ejecucion.
+    exec(
+      `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -c "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN;"`
+    );
+
     const files = readdirSync(MIGRATIONS_DIR)
       .filter((item) => item.endsWith('.sql'))
       .sort();
@@ -91,7 +99,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('successful-quota-reconciliation', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -103,7 +111,7 @@ describe('reconciliation integration', () => {
 
     const expired = query("SELECT expire_pending_reservations()");
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(Number(expired.trim())).toBe(0);
     expect(status.trim()).toBe('completed');
@@ -116,7 +124,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('failed-quota-reconciliation', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -125,11 +133,166 @@ describe('reconciliation integration', () => {
 
     const expired = query("SELECT expire_pending_reservations()");
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(Number(expired.trim())).toBe(1);
     expect(status.trim()).toBe('expired');
     expect(Number(used.trim())).toBe(0);
+  });
+
+  it('expire_pending_reservations releases one unit per reservation of the same visitor and date', () => {
+    const visitorId = 'a198b54a-c7b8-49ff-8709-6d6d258f5560';
+    const reservationIds = [
+      'a16f6f00-1000-4a10-8709-6d6d258f5560',
+      'a26f6f00-1001-4a10-8709-6d6d258f5560',
+      'a36f6f00-1002-4a10-8709-6d6d258f5560',
+    ];
+
+    applyFixture(
+      'grouped-expiration',
+      `INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 3, 5)
+      ON CONFLICT (visitor_id, quota_date) DO NOTHING;
+
+      INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
+      VALUES ${reservationIds
+        .map(
+          (id) =>
+            `('${visitorId}'::uuid, '${id}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute')`
+        )
+        .join(',\n      ')};`
+    );
+
+    const expired = query('SELECT expire_pending_reservations()');
+    const used = query(
+      `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`
+    );
+    const statuses = query(
+      `SELECT string_agg(status, ',' ORDER BY reservation_id) FROM quota_reservations WHERE reservation_id IN (${reservationIds
+        .map((id) => `'${id}'::uuid`)
+        .join(', ')})`
+    );
+
+    expect(Number(expired.trim())).toBe(3);
+    expect(Number(used.trim())).toBe(0);
+    expect(statuses.trim()).toBe('expired,expired,expired');
+  });
+
+  it('expire_pending_reservations groups by visitor and by date', () => {
+    const firstVisitor = 'b198b54a-c7b8-49ff-8709-6d6d258f5561';
+    const secondVisitor = 'c298b54a-c7b8-49ff-8709-6d6d258f5562';
+
+    applyFixture(
+      'grouped-by-visitor-and-date',
+      `INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
+      VALUES ('${firstVisitor}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 2, 5),
+             ('${secondVisitor}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 2, 5),
+             ('${firstVisitor}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE - 1, 1, 5)
+      ON CONFLICT (visitor_id, quota_date) DO NOTHING;
+
+      INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
+      VALUES ('${firstVisitor}'::uuid, 'b16f6f00-2000-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+             ('${firstVisitor}'::uuid, 'b26f6f00-2001-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+             ('${secondVisitor}'::uuid, 'c16f6f00-2002-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+             ('${secondVisitor}'::uuid, 'c26f6f00-2003-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+             ('${firstVisitor}'::uuid, 'b36f6f00-2004-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '1 day 2 hours', NOW() - INTERVAL '1 day 1 hour');`
+    );
+
+    const expired = query('SELECT expire_pending_reservations()');
+    const today = query(
+      `SELECT (SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${firstVisitor}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE) || '|' || (SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${secondVisitor}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE) || '|' || (SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${firstVisitor}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE - 1)`
+    );
+
+    expect(Number(expired.trim())).toBe(5);
+    expect(today.split('|').map((value) => Number(value.trim()))).toEqual([0, 0, 0]);
+  });
+
+  it('running expiration twice does not release quota twice', () => {
+    const visitorId = 'd398b54a-c7b8-49ff-8709-6d6d258f5563';
+    const reservationId = 'd16f6f00-3000-4a10-8709-6d6d258f5563';
+
+    applyFixture(
+      'idempotent-expiration',
+      `INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 2, 5)
+      ON CONFLICT (visitor_id, quota_date) DO NOTHING;
+
+      INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');`
+    );
+
+    const first = query('SELECT expire_pending_reservations()');
+    const usedAfterFirst = query(
+      `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`
+    );
+    const second = query('SELECT expire_pending_reservations()');
+    const usedAfterSecond = query(
+      `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`
+    );
+
+    expect(Number(first.trim())).toBe(1);
+    expect(Number(usedAfterFirst.trim())).toBe(1);
+    expect(Number(second.trim())).toBe(0);
+    expect(Number(usedAfterSecond.trim())).toBe(1);
+  });
+
+  it('concurrent expiration and confirmation keep the quota consistent', async () => {
+    const visitorId = 'e498b54a-c7b8-49ff-8709-6d6d258f5564';
+    const expiredReservation = 'e16f6f00-4000-4a10-8709-6d6d258f5564';
+    const confirmedReservation = 'e26f6f00-4001-4a10-8709-6d6d258f5564';
+
+    applyFixture(
+      'concurrent-expiration-confirmation',
+      `INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 2, 5)
+      ON CONFLICT (visitor_id, quota_date) DO NOTHING;
+
+      INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
+      VALUES ('${visitorId}'::uuid, '${expiredReservation}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+             ('${visitorId}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW(), NOW() + INTERVAL '5 minutes');`
+    );
+
+    const [expiration, confirmation] = await Promise.all([
+      execAsync(
+        `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT expire_pending_reservations();"`
+      ),
+      execAsync(
+        `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT confirm_quota('${confirmedReservation}'::uuid);"`
+      ),
+    ]);
+
+    const expiredStatus = query(
+      `SELECT status FROM quota_reservations WHERE reservation_id = '${expiredReservation}'::uuid`
+    );
+    const confirmedStatus = query(
+      `SELECT status FROM quota_reservations WHERE reservation_id = '${confirmedReservation}'::uuid`
+    );
+    const used = query(
+      `SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`
+    );
+
+    expect(Number(expiration.stdout.trim())).toBe(1);
+    expect(confirmation.stdout).toContain('"confirmed"');
+    expect(expiredStatus.trim()).toBe('expired');
+    expect(confirmedStatus.trim()).toBe('completed');
+    expect(Number(used.trim())).toBe(1);
+  }, 60000);
+
+  it('expire_pending_reservations is restricted to service_role', () => {
+    expect(
+      query(`SELECT has_function_privilege('anon', 'public.expire_pending_reservations()', 'EXECUTE');`).trim()
+    ).toBe('f');
+    expect(
+      query(
+        `SELECT has_function_privilege('authenticated', 'public.expire_pending_reservations()', 'EXECUTE');`
+      ).trim()
+    ).toBe('f');
+    expect(
+      query(`SELECT has_function_privilege('service_role', 'public.expire_pending_reservations()', 'EXECUTE');`).trim()
+    ).toBe('t');
+    expect(query("SELECT relrowsecurity FROM pg_class WHERE oid = 'public.quota_reservations'::regclass;").trim()).toBe(
+      't'
+    );
   });
 
   it('mark_quota_sent moves a pending reservation to sent_uncertain once', () => {
@@ -138,7 +301,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('mark-quota-sent', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -160,7 +323,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('uncertain-quota-reconciliation', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -169,7 +332,7 @@ describe('reconciliation integration', () => {
 
     const expired = query('SELECT expire_pending_reservations()');
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(Number(expired.trim())).toBe(0);
     expect(status.trim()).toBe('sent_uncertain');
@@ -182,7 +345,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('uncertain-quota-success', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -194,7 +357,7 @@ describe('reconciliation integration', () => {
 
     const expired = query('SELECT expire_pending_reservations()');
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(Number(expired.trim())).toBe(0);
     expect(status.trim()).toBe('completed');
@@ -207,7 +370,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('uncertain-quota-confirm', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -217,7 +380,7 @@ describe('reconciliation integration', () => {
     const first = query(`SELECT confirm_quota('${reservationId}'::uuid)`);
     const second = query(`SELECT confirm_quota('${reservationId}'::uuid)`);
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(first.trim()).toContain('"confirmed"');
     expect(second.trim()).toContain('"already_processed"');
@@ -231,7 +394,7 @@ describe('reconciliation integration', () => {
 
     applyFixture('uncertain-quota-release', `
       INSERT INTO visitor_daily_quota (visitor_id, quota_date, generations_used, max_generations)
-      VALUES ('${visitorId}'::uuid, CURRENT_DATE, 1, 5)
+      VALUES ('${visitorId}'::uuid, (NOW() AT TIME ZONE 'America/Mexico_City')::DATE, 1, 5)
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
@@ -240,7 +403,7 @@ describe('reconciliation integration', () => {
 
     const released = query(`SELECT release_quota('${reservationId}'::uuid)`);
     const status = query(`SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid`);
-    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = CURRENT_DATE`);
+    const used = query(`SELECT generations_used FROM visitor_daily_quota WHERE visitor_id = '${visitorId}'::uuid AND quota_date = (NOW() AT TIME ZONE 'America/Mexico_City')::DATE`);
 
     expect(released.trim()).toContain('"released"');
     expect(status.trim()).toBe('released');

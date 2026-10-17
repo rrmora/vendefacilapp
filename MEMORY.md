@@ -4,7 +4,7 @@
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
-T-004-7 y T-004-7A implementadas localmente (345/345, 12/12 corridas completas de
+T-004-7, T-004-7A y T-004-8.1 implementadas localmente (354/354, 10/10 corridas completas de
 `pnpm test` en verde); T-004-8 pendiente y sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
@@ -12,13 +12,13 @@ Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 
 ## Fase activa
 
-T-004-7A - Rate limiting con ventana móvil real (implementada localmente, no aprobada para producción).
+T-004-8.1 - Corrección de expiración de cuota (implementada localmente, no aprobada para producción).
 
 ## Última tarea completada
 
-T-004-7A - Rate limiting con ventana móvil real mediante registro de eventos
-aceptados y bloqueo transaccional por IP (implementada localmente, no aprobada
-para producción, 2026-10-13).
+T-004-8.1 - Corrección de expiración de cuota: agrupación de reservas vencidas
+por visitante y fecha antes de liberar cuota (implementada localmente, no
+aprobada para producción, 2026-10-16).
 
 ## Fase 3 — Cierre
 
@@ -264,6 +264,42 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   es intencional y esta documentado.
 - `ip_rate_limits` queda sin escritores; si alguna herramienta externa la leyera,
   veria datos obsoletos.
+
+## T-004-8.1 - Correccion de expiracion de cuota (local, no aprobado para produccion)
+
+- `supabase/migrations/019_fix_quota_expiration.sql` (nueva; 001-018 intactas).
+- Causa raiz: `expire_pending_reservations` liberaba cuota con
+  `UPDATE visitor_daily_quota q ... FROM expired e`. En PostgreSQL, cuando varias
+  filas de la fuente coinciden con la misma fila destino, solo se aplica UNA
+  actualizacion: un lote de N reservas vencidas del mismo visitante y fecha
+  liberaba una sola unidad de cuota.
+- Correccion: se agrupan las reservas expiradas por `(visitor_id, quota_date)` y se
+  resta el conteo. Firma (sin parametros) y retorno `INTEGER` conservados.
+- Se mantienen sin cambios: `sent_uncertain` nunca se libera automaticamente; las
+  reservas `pending` o `sent_uncertain` con `generation_records.success = TRUE` se
+  marcan `completed` sin decrementar cuota; `quota_date` se deriva de `created_at`
+  en America/Mexico_City.
+- Se anadio `SET search_path = public, pg_temp` a la funcion; `EXECUTE` revocado a
+  PUBLIC/anon/authenticated y concedido a service_role.
+- Reproduccion verificada en PostgreSQL 17: con 3 reservas vencidas del mismo
+  visitante y dia, sin 019 `generations_used` queda en 2; con 019 queda en 0.
+- Pruebas nuevas (5): liberacion de una unidad por reserva (3 reservas mismo
+  visitante/dia), agrupacion por visitante y por fecha, ejecucion repetida sin
+  doble decremento, concurrencia entre expiracion y confirmacion, y permisos/RLS
+  en tiempo de ejecucion. 4 pruebas estaticas de la migracion 019.
+- **Defecto de pruebas detectado y corregido**: las pruebas de reconciliacion
+  sembraban `visitor_daily_quota` con `CURRENT_DATE` (fecha UTC del contenedor)
+  mientras `release_quota` y `expire_pending_reservations` derivan la fecha en
+  America/Mexico_City. Entre 00:00 y 06:00 UTC ambas fechas difieren y las
+  pruebas fallaban aunque el codigo fuera correcto. Ahora usan
+  `(NOW() AT TIME ZONE 'America/Mexico_City')::DATE`, igual que produccion.
+- Total: 354/354. Lint, typecheck y build exitosos. 10/10 corridas completas en verde.
+- Sin cambios en `src/lib/**` ni en contratos publicos.
+
+**Pendiente (T-004-8)**
+- T-004-8.2: mismo defecto en `reconcile_pending_budget_reservations` (el gasto se
+  subcontaba y `reserved_usd` quedaba inflado). No autorizado todavia.
+- Processos programado, limpieza global de eventos y job de reconciliacion.
 
 ## Decisiones arquitectonicas
 

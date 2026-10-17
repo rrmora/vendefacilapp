@@ -460,3 +460,17 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Total: 345/345. Lint, typecheck y build exitosos. 12/12 corridas completas de pnpm test en verde.
 - Pendiente: la limpieza global de eventos antiguos y la reconciliacion de reservas requieren el job periodico que sigue sin implementarse.
 - Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-16 — T-004-8.1: correccion de expiracion de cuota por lote
+
+- supabase/migrations/019_fix_quota_expiration.sql (nueva; 001-018 intactas): replace de public.expire_pending_reservations() conservando firma sin parametros y retorno INTEGER.
+- Causa raiz: el ajuste de cuota usaba UPDATE visitor_daily_quota ... FROM expired, y en PostgreSQL solo se aplica una actualizacion cuando varias filas origen coinciden con la misma fila destino; un lote de N reservas vencidas del mismo visitante y fecha liberaba una sola unidad.
+- Correccion: se agrupan las reservas expiradas por (visitor_id, quota_date) y se resta el conteo con GREATEST(..., 0).
+- Sin cambios de semantica: sent_uncertain nunca se libera automaticamente, las reservas pending o sent_uncertain con generation_records.success = TRUE se completan sin decrementar cuota y la quota_date se deriva de created_at en America/Mexico_City.
+- Se anadio SET search_path = public, pg_temp; EXECUTE revocado a PUBLIC, anon y authenticated y concedido a service_role.
+- Reproduccion en PostgreSQL 17: 3 reservas vencidas del mismo visitante y dia dejan generations_used en 2 sin la migracion y en 0 con ella.
+- Pruebas nuevas: liberacion de una unidad por reserva, agrupacion por visitante y por fecha, ejecucion repetida sin doble decremento, concurrencia entre expiracion y confirmacion y permisos/RLS en runtime; ademas 4 pruebas estaticas de la migracion.
+- Correccion de pruebas existentes: reconciliation.test.ts sembraba visitor_daily_quota con CURRENT_DATE (fecha UTC) mientras las funciones derivan la fecha en America/Mexico_City; entre 00:00 y 06:00 UTC las pruebas fallaban sin que hubiera defecto de codigo. Ahora usan (NOW() AT TIME ZONE 'America/Mexico_City')::DATE.
+- Total: 354/354. Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
+- Pendiente: T-004-8.2 (mismo defecto en reconcile_pending_budget_reservations) sigue sin autorizar.
+- Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
