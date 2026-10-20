@@ -4,21 +4,23 @@
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
-T-004-7, T-004-7A y T-004-8.1 implementadas localmente (354/354, 10/10 corridas completas de
-`pnpm test` en verde); T-004-8 pendiente y sin iniciar.
+T-004-7, T-004-7A, T-004-8.1, T-004-8.2 y T-004-8.2b implementadas localmente
+(379/379, 10/10 corridas completas de `pnpm test` en verde); T-004-8 pendiente y
+sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-8.1 - Corrección de expiración de cuota (implementada localmente, no aprobada para producción).
+T-004-8.2b - Corrección de timestamps de transición de cuota (implementada
+localmente, no aprobada para producción).
 
 ## Última tarea completada
 
-T-004-8.1 - Corrección de expiración de cuota: agrupación de reservas vencidas
-por visitante y fecha antes de liberar cuota (implementada localmente, no
-aprobada para producción, 2026-10-16).
+T-004-8.2b - Corrección de timestamps de transición de cuota: `completed_at`
+con `clock_timestamp()` acotado por `created_at` y expiración con reloj real de
+ejecución (implementada localmente, no aprobada para producción, 2026-10-20).
 
 ## Fase 3 — Cierre
 
@@ -301,6 +303,105 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   subcontaba y `reserved_usd` quedaba inflado). No autorizado todavia.
 - Processos programado, limpieza global de eventos y job de reconciliacion.
 
+## T-004-8.2 - Correccion de reconciliacion de presupuesto (local, no aprobado)
+
+- `supabase/migrations/020_fix_budget_reconciliation.sql` (nueva; 001-019 intactas).
+- Causa raiz: la version vigente (016) consolidaba con
+  `UPDATE budget_tracking t ... FROM stale s`. Con varias reservas vencidas del
+  mismo mes solo se aplicaba una actualizacion: el gasto quedaba subcontado y
+  `reserved_usd` conservaba el monto de la reserva si confirmada.
+- Correccion: una sola sentencia marca las reservas `reserved` mas antiguas que
+  `p_max_age` como `confirmed` (devolviendo budget_month y reserved_cost_usd) y
+  ajusta `budget_tracking` agrupando por `budget_month`. Firma, parametro
+  `p_max_age` (15 min por defecto) y retorno `INTEGER` conservados.
+- Mejoras de consistencia: la transicion de estado y el ajuste de budget_tracking
+  ocurren en la misma sentencia (antes eran dos sentencias con ventana entre
+  ellas); el `WHERE b.status = 'reserved'` evita que la conciliacion pise una
+  reserva que `confirm_budget` o `release_budget` ya habian procesado.
+- Politica conservadora sin cambios: `actual_cost_usd = reserved_cost_usd` y
+  `cost_estimated = TRUE` para reservas antiguas o ambiguas.
+- `completed_at` se escribe con `clock_timestamp()` y no con `NOW()` (ver
+  "Hallazgo NOW() vs clock_timestamp()" mas abajo).
+- Se anadio `SET search_path = public, pg_temp`; `EXECUTE` revocado a
+  PUBLIC/anon/authenticated y concedido a service_role.
+- Reproduccion verificada en PostgreSQL 17: 3 reservas vencidas (1.0 + 2.0 + 0.5)
+  del mismo mes dejan `spent_usd=1.0, reserved_usd=2.0` sin 020 y
+  `spent_usd=3.5, reserved_usd=0.0` con 020.
+- Pruebas nuevas (7): suma exacta por periodo, periodos presupuestarios distintos,
+  reservas no elegibles intactas, dos conciliaciones simultaneas (cada reserva se
+  confirma una vez), concurrencia con `confirm_budget`, concurrencia con
+  `release_budget` y permisos/RLS en runtime. 4 pruebas estaticas de la migracion.
+- Correccion de pruebas: los fixtures de presupuesto usaban
+  `ON CONFLICT (month) DO NOTHING`, por lo que compartian la fila del mes con
+  pruebas anteriores y las sumas no eran deterministas; ahora restablecen
+  `spent_usd` y `reserved_usd` con `DO UPDATE`.
+- Aislamiento de las pruebas de cuota: los fixtures que invocan la funcion global
+  `expire_pending_reservations()` ahora borran `generation_records` y
+  `quota_reservations` antes de sembrar, de modo que el conteo global sea
+  determinista. Las dos pruebas de `sent_uncertain` ejecutan siembra, expiracion y
+  lectura en una sola transaccion.
+- Total al cerrar T-004-8.2: 365/365 (379/379 tras T-004-8.2b). Sin cambios en
+  `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
+  realCallsAuthorized=false.
+
+**Hallazgo NOW() vs clock_timestamp() (resuelto en T-004-8.2b)**
+- Las RPC de cuota de las migraciones 011/015/017 escribian `completed_at = NOW()`,
+  y `NOW()` es el inicio de la transaccion, no el instante de la instruccion.
+- Una transaccion larga que actualiza filas creadas por otras transiciones podia
+  escribir un `completed_at` ANTERIOR al `created_at` de la fila y violar
+  `chk_completed_after_created`. Reproducido en PostgreSQL 17: una transaccion que
+  empezo a las 01:32:35.250 y actualizo a las 01:32:43 una fila creada a las
+  01:32:38.670 produjo `ERROR: new row for relation "quota_reservations" violates
+  check constraint "chk_completed_after_created"`.
+- Alcance real: no solo era un artefacto de pruebas. El proceso programado de
+  T-004-8 esta disenado para ejecutar las tareas dentro de una sola transaccion,
+  que es precisamente el escenario que dispara la violacion.
+- En T-004-8.2 la migracion 020 ya nacio con `clock_timestamp()`. La correccion de
+  las RPC de cuota se aplico en T-004-8.2b (migracion 021).
+
+**Pendiente (T-004-8, continuacion)**
+- T-004-8.3 en adelante (limpieza global, tabla de auditoria, `run_maintenance`,
+  endpoint) sin autorizar; T-004-8.8 bloqueada por la decision de despliegue.
+
+## T-004-8.2b - Correccion de timestamps de transicion de cuota (local, no aprobado)
+
+- `supabase/migrations/021_fix_quota_transition_timestamps.sql` (nueva; 001-020
+  intactas): replace de `public.confirm_quota(UUID)`, `public.release_quota(UUID)`
+  y `public.expire_pending_reservations()`. Firmas, retornos, estados,
+  idempotencia y proteccion de `sent_uncertain` conservados.
+- Causa raiz: `NOW()` es el inicio de la transaccion. Confirmar o liberar una
+  reserva creada por otra transaccion despues de iniciar la actual puede escribir
+  `completed_at < created_at` y violar `chk_completed_after_created`. En
+  `expire_pending_reservations`, `NOW()` ademas impedia ver como vencidas las
+  reservas que expiraron durante una transaccion larga.
+- Correccion: `completed_at = GREATEST(clock_timestamp(), created_at)` en
+  `confirm_quota` y `release_quota`. En `expire_pending_reservations` se captura
+  `v_now := clock_timestamp()` una sola vez y se usa para la elegibilidad
+  (`expires_at < v_now`) y para `completed_at = GREATEST(v_now, created_at)`.
+  `updated_at` de `visitor_daily_quota` usa el mismo reloj de ejecucion.
+- El `GREATEST` protege la restriccion incluso si el reloj de pared retrocede
+  (resincronizacion de hora): durante la validacion se observo una regresion de
+  reloj del contenedor que produjo `clock_timestamp() < created_at`; el limite
+  inferior elimina esa violacion sin cambiar la semantica normal.
+- No se toco `mark_quota_sent` (no escribe timestamps) ni `NOW()` en
+  `created_at`/`expires_at` de `reserve_quota`, donde el instante consistente de
+  la transaccion es intencional. Tampoco se modifico la reconciliacion de
+  presupuesto de 020.
+- Reproduccion verificada en PostgreSQL 17 con 001-020: una transaccion iniciada
+  antes de insertar la reserva y que confirma despues produce la violacion del
+  CHECK. Con 021 la confirmacion es `completed`, `completed_at >= created_at` y no
+  hay error. Tambien se reprodujo que la expiracion dentro de una transaccion
+  larga devolvia 0 sin 021 y expira el lote con 021.
+- Pruebas nuevas: transaccion iniciada antes de la reserva (confirmacion y
+  liberacion), expiracion de tres reservas en una transaccion larga, concurrencia
+  entre confirmacion/liberacion/expiracion, timestamps estables en llamadas
+  idempotentes, regresion de reloj simulado con `created_at` futuro, permisos RPC
+  y RLS, y 7 pruebas estaticas de la migracion 021.
+- Total: 379/379. Lint, typecheck y build exitosos. 10/10 corridas completas de
+  `pnpm test` en verde.
+- Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
+  realCallsAuthorized=false.
+
 ## Decisiones arquitectonicas
 
 - (T-001) Next.js 16.4.0 + React 19.3.0; TS 5.9.3 sobre 7.0.2;
@@ -341,9 +442,9 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 ## Bloqueos
 
 **Bloqueantes de producción (Fase 4):**
-1. T-004-6, T-004-7 y T-004-7A implementadas y validadas localmente (345/345),
-   pero sin aprobación para producción. `AI_ENABLED=false` y
-   `realCallsAuthorized=false`.
+1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2 y T-004-8.2b implementadas y
+   validadas localmente (379/379), pero sin aprobación para producción.
+   `AI_ENABLED=false` y `realCallsAuthorized=false`.
 2. Limpieza automática ausente: sin job periódico, los eventos de
    `ip_rate_limit_events` de IPs que no regresan no se eliminan y las reservas de
    cuota y presupuesto no se consolidan.
@@ -351,6 +452,7 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 **Pendientes:**
 1. Mecanismo automático de reconciliación de reservas y de limpieza de eventos.
 2. Verificación del modelo predeterminado de Groq.
+3. Commit local conjunto de T-004-8.2 y T-004-8.2b creado (sin push).
 
 ## Siguiente tarea propuesta
 

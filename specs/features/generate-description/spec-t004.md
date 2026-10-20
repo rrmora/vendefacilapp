@@ -114,6 +114,13 @@ unidad por lote del mismo visitante y fecha.
 Maximo 5 unidades de cuota ocupadas y 3 reservas pendientes
 simultaneas por visitante.
 
+`created_at` y `expires_at` de una reserva nueva siguen usando `NOW()`
+dentro de `reserve_quota`: ahi interesa un unico instante consistente
+para la transaccion que crea la reserva. Los timestamps de transicion
+(`completed_at`, `updated_at` y la comparacion de expiracion) usan
+`clock_timestamp()` porque deben reflejar el instante real de ejecucion,
+no el inicio de una transaccion larga (T-004-8.2b).
+
 ### 2.1 Reservar cuota
 
 ```sql
@@ -146,7 +153,8 @@ RETURN reservation_id;
 BEGIN;
 
 UPDATE quota_reservations
-SET status = 'completed', completed_at = NOW()
+SET status = 'completed',
+    completed_at = GREATEST(clock_timestamp(), created_at)
 WHERE reservation_id = $1 AND status = 'pending';
 
 -- Si affected_rows = 0: reserva expirada o liberada previamente
@@ -160,13 +168,14 @@ BEGIN;
 
 WITH released AS (
   UPDATE quota_reservations
-  SET status = 'released', completed_at = NOW()
+  SET status = 'released',
+      completed_at = GREATEST(clock_timestamp(), created_at)
   WHERE reservation_id = $1 AND status = 'pending'
   RETURNING visitor_id, (created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date
 )
 UPDATE visitor_daily_quota q
 SET generations_used = GREATEST(q.generations_used - 1, 0),
-    updated_at = NOW()
+    updated_at = clock_timestamp()
 FROM released r
 WHERE q.visitor_id = r.visitor_id
   AND q.quota_date = r.quota_date;
@@ -179,21 +188,55 @@ COMMIT;
 ```sql
 BEGIN;
 
+-- Reloj real de ejecucion capturado una sola vez.
+v_now := clock_timestamp();
+
 WITH expired AS (
   UPDATE quota_reservations
-  SET status = 'expired'
-  WHERE status = 'pending' AND expires_at < NOW()
+  SET status = 'expired',
+      completed_at = GREATEST(v_now, created_at)
+  WHERE status = 'pending' AND expires_at < v_now
   RETURNING visitor_id, (created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date
+),
+released AS (
+  SELECT visitor_id, quota_date, COUNT(*)::INTEGER AS units
+  FROM expired
+  GROUP BY visitor_id, quota_date
 )
 UPDATE visitor_daily_quota q
-SET generations_used = GREATEST(q.generations_used - 1, 0),
-    updated_at = NOW()
-FROM expired e
-WHERE q.visitor_id = e.visitor_id
-  AND q.quota_date = e.quota_date;
+SET generations_used = GREATEST(q.generations_used - r.units, 0),
+    updated_at = v_now
+FROM released r
+WHERE q.visitor_id = r.visitor_id
+  AND q.quota_date = r.quota_date;
 
 COMMIT;
 ```
+
+### 2.5 Timestamps de transicion (T-004-8.2b)
+
+`NOW()` es el inicio de la transaccion, no el instante de la instruccion. Las
+transiciones de cuota deben usar `clock_timestamp()` para reflejar cuando
+ocurrieron realmente. Esto aplica a:
+
+- `completed_at` en `confirm_quota`, `release_quota` y
+  `expire_pending_reservations`.
+- La comparacion `expires_at < ...` de `expire_pending_reservations`, de modo
+  que una transaccion larga tambien expira reservas vencidas durante su
+  ejecucion.
+- `updated_at` de `visitor_daily_quota` en liberacion y expiracion.
+
+Para `completed_at` se usa `GREATEST(clock_timestamp(), created_at)` (o
+`GREATEST(v_now, created_at)` en la expiracion). La cota inferior garantiza
+`chk_completed_after_created` incluso si el reloj de pared retrocede por una
+resincronizacion de hora. En `expire_pending_reservations` el reloj se captura
+una sola vez (`v_now`) y se usa para decidir la expiracion y para
+`completed_at`; como `chk_expires_after_created` exige
+`expires_at > created_at`, toda fila elegible cumple `created_at < v_now`.
+
+No se reemplaza `NOW()` en `created_at`/`expires_at` de `reserve_quota` ni en
+calculos de periodos presupuestarios, donde se requiere un instante
+consistente por transaccion.
 
 ## 3. Manejo de concurrencia y reservas expiradas
 
@@ -286,6 +329,24 @@ Si el primer proveedor falla despues de consumir tokens:
 - Variable de entorno `AI_MAX_TOKENS_DEFAULT_INPUT` (default 400) y `AI_MAX_TOKENS_DEFAULT_OUTPUT` (default 200).
 - Alerta log cuando el 80% del presupuesto mensual proviene de estimaciones.
 - Metrica de estimaciones vs reales para calibrar defaults.
+
+### 4.6 Conciliacion de reservas antiguas
+
+- `reconcile_pending_budget_reservations(p_max_age INTERVAL DEFAULT '15 minutes')`
+  confirma las reservas que llevan mas de `p_max_age` en estado `reserved`.
+- Politica conservadora: se confirman con `actual_cost_usd = reserved_cost_usd` y
+  `cost_estimated = TRUE`. No se libera presupuesto potencialmente consumido.
+- Solo se procesan reservas en estado `reserved`, por lo que la ejecucion es
+  idempotente y no pisa reservas ya confirmadas o liberadas.
+- El ajuste de `budget_tracking` agrupa por `budget_month` antes de sumar, de modo
+  que varias reservas del mismo mes se consolidan por la suma exacta. Antes de
+  T-004-8.2 solo se aplicaba una de ellas.
+- La transicion de estado y el ajuste de `budget_tracking` ocurren en una sola
+  sentencia, con los mismos bloqueos de fila que usa `confirm_budget` y
+  `release_budget`.
+- `completed_at` se escribe con `clock_timestamp()` y no con `NOW()`: `NOW()` es
+  el inicio de la transaccion y podria resultar anterior al `created_at` de una fila
+  creada por otra transaccion.
 
 ## 5. Privacidad y retencion
 
@@ -388,6 +449,19 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 - Primer proveedor falla con tokens consumidos, segundo proveedor exitoso.
 - Esperado: costo estimado del primero registrado, costo real del segundo registrado, ambos conciliados.
 
+### 7.9 Timestamps de transicion (T-004-8.2b)
+- Transaccion iniciada antes de crear la reserva, que confirma o libera despues:
+  esperado `completed_at >= created_at`, sin violar `chk_completed_after_created`.
+- Transaccion larga que expira varias reservas creadas y vencidas durante su
+  ejecucion: esperado que todas expiren y liberen su unidad de cuota.
+- Concurrencia entre confirmacion, liberacion y expiracion: una sola transicion
+  por reserva, cuota consistente y timestamps validos.
+- Llamadas idempotentes: `completed_at` no cambia en la segunda llamada.
+- Reloj de pared retrocedido: `GREATEST(..., created_at)` mantiene
+  `completed_at >= created_at`.
+- `sent_uncertain` sigue sin liberarse automaticamente; RLS y permisos EXECUTE
+  restringidos a `service_role` se conservan.
+
 ## 8. Subtareas
 
 ### T-004-1: Modulo de identificacion de visitante
@@ -488,11 +562,13 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 
 ## 11. Bloqueantes de producción (Fase 4)
 
-- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A/T-004-8.1.**
+- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A/T-004-8.1/T-004-8.2/T-004-8.2b.**
   La integración en `/api/generate`, la protección persistente de resultado
-  incierto, el rate limit de ventana móvil y la corrección de expiración de cuota
-  están implementados y validados localmente (354/354), pero no aprobados para
-  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
+  incierto, el rate limit de ventana móvil y las correcciones de expiración de
+  cuota, de reconciliación de presupuesto y de timestamps de transición están
+  implementadas y validadas localmente (379/379, 10/10 corridas completas), pero
+  no aprobadas para producción. `AI_ENABLED=false` y `realCallsAuthorized=false`
+  se mantienen.
 - **BLOQUEANTE — limpieza automática ausente.** Sin un job periódico, los
   eventos de `ip_rate_limit_events` de IPs que dejan de volver no se eliminan
   (la RPC solo limpia la IP que consulta) y tampoco se consolidan las reservas
@@ -503,10 +579,15 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
   `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre
   de forma reactiva; las reservas `pending` vencidas y las reservas de
   presupuesto antiguas permanecen sin consolidar hasta que se programe el job.
-- **PENDIENTE — `reconcile_pending_budget_reservations` corrige el mismo defecto
-  de `UPDATE ... FROM` (T-004-8.2).** Con varias reservas vencidas del mismo mes
-  el gasto se subcuenta y `reserved_usd` queda inflado. No se debe activar el
-  proceso programado antes de corregirlo.
+- **RESUELTO en T-004-8.2b — `completed_at` con `NOW()` en las RPC de cuota.**
+  La migración `021_fix_quota_transition_timestamps.sql` reemplaza `NOW()` por
+  `clock_timestamp()` en `confirm_quota`, `release_quota` y
+  `expire_pending_reservations`, y acota `completed_at` con
+  `GREATEST(..., created_at)`. `mark_quota_sent` no escribe `completed_at`, por
+  lo que no requirió cambios. La corrección se reprodujo y validó en PostgreSQL
+  17, incluyendo transacciones iniciadas antes de la creación de la reserva,
+  expiración de varias reservas en una transacción larga y concurrencia entre
+  confirmación, liberación y expiración.
 - **PENDIENTE — verificación del estado del modelo predeterminado de Groq**
   (fase T-003A).
 

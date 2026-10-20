@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 19 archivos SQL', () => {
+    it('contiene 21 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(19);
+      expect(files).toHaveLength(21);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -36,6 +36,8 @@ describe('schema migrations', () => {
       expect(files[16]).toMatch(/^017_/);
       expect(files[17]).toMatch(/^018_/);
       expect(files[18]).toMatch(/^019_/);
+      expect(files[19]).toMatch(/^020_/);
+      expect(files[20]).toMatch(/^021_/);
     });
   });
 
@@ -248,6 +250,116 @@ describe('schema migrations', () => {
       expect(sql).toContain(
         "REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM authenticated"
       );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.expire_pending_reservations() TO service_role'
+      );
+    });
+  });
+
+  describe('migracion 020 correccion de reconciliacion de presupuesto', () => {
+    const sql = readMigration('020_fix_budget_reconciliation.sql');
+
+    it('conserva la firma, el parametro y el retorno INTEGER', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.reconcile_pending_budget_reservations(');
+      expect(sql).toContain("p_max_age INTERVAL DEFAULT INTERVAL '15 minutes'");
+      expect(sql).toContain(') RETURNS INTEGER AS $$');
+      expect(sql).toContain('SELECT COUNT(*) INTO v_count FROM stale;');
+    });
+
+    it('agrupa las reservas vencidas por budget_month', () => {
+      expect(sql).toContain('GROUP BY budget_month');
+      expect(sql).toContain('SUM(reserved_cost_usd)');
+      expect(sql).toContain('SET spent_usd = t.spent_usd + c.committed_usd');
+      expect(sql).toContain('reserved_usd = GREATEST(t.reserved_usd - c.committed_usd, 0),');
+    });
+
+    it('mantiene la politica conservadora y la idempotencia', () => {
+      expect(sql).toContain('cost_estimated = TRUE');
+      expect(sql).toContain('actual_cost_usd = b.reserved_cost_usd');
+      expect(sql).toContain("WHERE b.status = 'reserved'");
+    });
+
+    it('fija un search_path seguro y restringe EXECUTE', () => {
+      expect(sql).toContain('SET search_path = public, pg_temp');
+      expect(sql).toContain(
+        'REVOKE EXECUTE ON FUNCTION public.reconcile_pending_budget_reservations(INTERVAL) FROM PUBLIC'
+      );
+      expect(sql).toContain(
+        "REVOKE EXECUTE ON FUNCTION public.reconcile_pending_budget_reservations(INTERVAL) FROM anon"
+      );
+      expect(sql).toContain(
+        "REVOKE EXECUTE ON FUNCTION public.reconcile_pending_budget_reservations(INTERVAL) FROM authenticated"
+      );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.reconcile_pending_budget_reservations(INTERVAL) TO service_role'
+      );
+    });
+  });
+
+  describe('migracion 021 timestamps de transicion de cuota', () => {
+    const sql = readMigration('021_fix_quota_transition_timestamps.sql');
+
+    it('conserva firmas, retornos y parametros', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.confirm_quota(p_reservation_id UUID) RETURNS JSON');
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.release_quota(p_reservation_id UUID) RETURNS JSON');
+      expect(sql).toContain(
+        'CREATE OR REPLACE FUNCTION public.expire_pending_reservations() RETURNS INTEGER'
+      );
+      expect(sql).toContain("RETURN json_build_object('status', 'confirmed');");
+      expect(sql).toContain("RETURN json_build_object('status', 'released');");
+      expect(sql).toContain('RETURN v_expired_count;');
+    });
+
+    it('escribe completed_at con clock_timestamp() y no con NOW()', () => {
+      expect(sql).toContain(
+        "SET status = 'completed', completed_at = GREATEST(clock_timestamp(), created_at)"
+      );
+      expect(sql).toContain(
+        "SET status = 'released', completed_at = GREATEST(clock_timestamp(), created_at)"
+      );
+      expect(sql).not.toContain('completed_at = NOW()');
+      expect(sql).not.toContain('completed_at = now()');
+      expect(sql).not.toContain('completed_at = clock_timestamp()');
+    });
+
+    it('captura el reloj una sola vez en la expiracion y lo usa en todas las transiciones', () => {
+      expect(sql.match(/v_now := clock_timestamp\(\);/g)).toHaveLength(1);
+      expect(sql).toContain("SET status = 'completed', completed_at = GREATEST(v_now, created_at)");
+      expect(sql).toContain("SET status = 'expired', completed_at = GREATEST(v_now, created_at)");
+      expect(sql).toContain('AND r.expires_at < v_now');
+      expect(sql).toContain("WHERE status = 'pending' AND expires_at < v_now");
+      expect(sql).toContain('updated_at = v_now');
+    });
+
+    it('conserva la proteccion de sent_uncertain y la agrupacion de expiracion', () => {
+      expect(sql).toContain("WHERE r.status IN ('pending', 'sent_uncertain')");
+      expect(sql).toContain("WHERE status = 'pending' AND expires_at < v_now");
+      expect(sql).toContain('g.success = TRUE');
+      expect(sql).toContain('COUNT(*)::INTEGER AS units');
+      expect(sql).toContain('GROUP BY visitor_id, quota_date');
+      expect(sql).toContain('SET generations_used = GREATEST(q.generations_used - r.units, 0)');
+      expect(sql).toContain("(created_at AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date");
+    });
+
+    it('conserva la idempotencia de confirmacion y liberacion', () => {
+      expect(sql.match(/IF v_status NOT IN \('pending', 'sent_uncertain'\) THEN/g)).toHaveLength(2);
+      expect(sql.match(/'status', 'already_processed'/g)).toHaveLength(2);
+    });
+
+    it('no redefine mark_quota_sent', () => {
+      expect(sql).not.toContain('FUNCTION public.mark_quota_sent');
+    });
+
+    it('fija un search_path seguro y restringe EXECUTE', () => {
+      expect(sql.match(/SET search_path = public, pg_temp/g)).toHaveLength(3);
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.confirm_quota(UUID) FROM PUBLIC');
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.release_quota(UUID) FROM PUBLIC');
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM PUBLIC');
+      expect(sql).toContain(
+        "REVOKE EXECUTE ON FUNCTION public.expire_pending_reservations() FROM authenticated"
+      );
+      expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.confirm_quota(UUID) TO service_role');
+      expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.release_quota(UUID) TO service_role');
       expect(sql).toContain(
         'GRANT EXECUTE ON FUNCTION public.expire_pending_reservations() TO service_role'
       );

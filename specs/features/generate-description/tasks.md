@@ -64,7 +64,8 @@ aceptación, validaciones.
   - T-004-7A: Rate limiting con ventana móvil real ✅ (local, pendiente de aprobación)
   - T-004-8: Mantenimiento automático y reconciliación
     - T-004-8.1: Corrección de expiración de cuota ✅ (local, pendiente de aprobación)
-    - T-004-8.2: Corrección de reconciliación de presupuesto (pendiente)
+    - T-004-8.2: Corrección de reconciliación de presupuesto ✅ (local, pendiente de aprobación)
+    - T-004-8.2b: `completed_at` con `clock_timestamp()` en las RPC de cuota ✅ (local, pendiente de aprobación)
     - T-004-8.3-8.7: limpieza global, tabla de auditoría, run_maintenance, endpoint y documentación (pendiente)
     - T-004-8.8: Programación real (pg_cron o Vercel Cron) — bloqueada: requiere decidir despliegue
   - Cierre de fase 4: documentación y validación final (pendiente)

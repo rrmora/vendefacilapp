@@ -474,3 +474,34 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Total: 354/354. Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
 - Pendiente: T-004-8.2 (mismo defecto en reconcile_pending_budget_reservations) sigue sin autorizar.
 - Estado: implementado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-16 — T-004-8.2: correccion de reconciliacion de presupuesto
+
+- supabase/migrations/020_fix_budget_reconciliation.sql (nueva; 001-019 intactas): replace de public.reconcile_pending_budget_reservations() conservando firma, parametro p_max_age (15 min por defecto) y retorno INTEGER.
+- Causa raiz: la consolidacion usaba UPDATE budget_tracking ... FROM stale y en PostgreSQL solo se aplica una actualizacion cuando varias filas origen coinciden con la misma fila destino; con varias reservas vencidas del mismo mes el gasto quedaba subcontado y reserved_usd conservaba el monto de la reserva si confirmada.
+- Correccion: una sola sentencia marca como confirmed las reservas reserved mas antiguas que p_max_age y ajusta budget_tracking agrupando por budget_month.
+- Mejoras de consistencia: la transicion de estado y el ajuste de budget_tracking ocurren en la misma sentencia, eliminando la ventana entre ambos pasos; el filtro status = 'reserved' evita que la conciliacion pise una reserva ya procesada por confirm_budget o release_budget.
+- Politica conservadora sin cambios: actual_cost_usd = reserved_cost_usd y cost_estimated = TRUE.
+- Se anadio SET search_path = public, pg_temp; EXECUTE revocado a PUBLIC, anon y authenticated y concedido a service_role.
+- Reproduccion en PostgreSQL 17: 3 reservas vencidas (1.0 + 2.0 + 0.5) del mismo mes dejan spent_usd=1.0 y reserved_usd=2.0 sin la migracion, y spent_usd=3.5 y reserved_usd=0.0 con ella.
+- Pruebas nuevas: suma exacta por periodo, periodos distintos, reservas no elegibles intactas, dos conciliaciones simultaneas, concurrencia con confirm_budget y con release_budget, permisos/RLS en runtime y 4 pruebas estaticas de la migracion.
+- Correccion de pruebas: los fixtures de presupuesto restablecen ahora spent_usd y reserved_usd con ON CONFLICT DO UPDATE para que las sumas sean deterministas entre pruebas.
+- Aislamiento: los fixtures que invocan la funcion global expire_pending_reservations borran generation_records y quota_reservations antes de sembrar, y las pruebas de sent_uncertain ejecutan siembra, expiracion y lectura en una sola transaccion.
+- Hallazgo: las RPC de cuota (011/015/017) escriben completed_at con NOW(), que es el inicio de la transaccion; una transaccion larga que actualiza filas creadas por otras transiciones puede escribir un completed_at anterior al created_at y violar chk_completed_after_created. Reproducido en PostgreSQL 17. El proceso programado de T-004-8 ejecuta sus tareas en una sola transaccion, por lo que es un riesgo real; la correccion propuesta (usar clock_timestamp) NO se aplica sin autorizacion.
+- Total: 365/365. Lint, typecheck y build exitosos.
+- Pendiente: T-004-8.3 en adelante sigue sin autorizar.
+- Estado: implementado y committeado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-20 — T-004-8.2b: correccion de timestamps de transicion de cuota
+
+- supabase/migrations/021_fix_quota_transition_timestamps.sql (nueva; 001-020 intactas): replace de public.confirm_quota(UUID), public.release_quota(UUID) y public.expire_pending_reservations(). Firmas, retornos, estados, idempotencia y proteccion de sent_uncertain conservados.
+- Causa raiz: NOW() es el inicio de la transaccion, no el instante de la instruccion. Una transaccion iniciada antes de la creacion de una reserva podia escribir completed_at anterior a created_at y violar chk_completed_after_created. En expire_pending_reservations, NOW() tambien impedia ver como vencidas las reservas que expiraban durante la transaccion.
+- Correccion: completed_at = GREATEST(clock_timestamp(), created_at) en confirm_quota y release_quota; en expire_pending_reservations se captura v_now := clock_timestamp() una sola vez y se usa para la elegibilidad (expires_at < v_now) y para completed_at = GREATEST(v_now, created_at). updated_at de visitor_daily_quota usa el reloj de ejecucion.
+- El GREATEST acota completed_at y garantiza la restriccion incluso si el reloj de pared retrocede. Durante la validacion se observo una regresion de reloj del contenedor (clock_timestamp() anterior a created_at) que este limite inferior neutraliza.
+- No se modifico mark_quota_sent (no escribe timestamps) ni NOW() en created_at/expires_at de reserve_quota, donde el instante consistente de la transaccion es intencional. La migracion 020 y su reconciliacion de presupuesto no se tocaron.
+- Se conservan SET search_path = public, pg_temp en las tres funciones y EXECUTE revocado a PUBLIC, anon y authenticated, concedido a service_role.
+- Reproduccion en PostgreSQL 17 con 001-020: transaccion iniciada antes de insertar la reserva y confirmacion posterior -> ERROR new row violates check constraint chk_completed_after_created. Con 021: confirmacion completed sin error y completed_at >= created_at. La expiracion dentro de una transaccion larga devolvia 0 sin 021 y expira el lote con 021.
+- Pruebas nuevas: confirmacion y liberacion en transacciones iniciadas antes de la reserva, expiracion de tres reservas en una transaccion larga, concurrencia entre confirmacion/liberacion/expiracion, timestamps estables en llamadas idempotentes, regresion de reloj simulada con created_at futuro, permisos RPC y RLS, y 7 pruebas estaticas de la migracion 021.
+- Total: 379/379. Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
+- Sin cambios en src/lib/** ni en contratos publicos. AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado y committeado localmente, no aprobado para produccion. Sin push. AI_ENABLED=false y realCallsAuthorized=false.
