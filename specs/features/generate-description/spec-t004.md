@@ -476,6 +476,27 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
   elegibles una sola vez.
 - RLS activo, `search_path` seguro y `EXECUTE` restringido a `service_role`.
 
+### 7.11 Auditoria del mantenimiento (T-004-8.4)
+- Insercion con valores por defecto: `status = 'running'`, `started_at` con
+  `clock_timestamp()` y `duration_ms = NULL`.
+- Finalizacion con `success`, `partial` o `failed`: `finished_at` obligatorio y
+  `duration_ms` derivada de `finished_at - started_at` (2500 ms y 1500 ms
+  verificados).
+- Estados invalidos, `running` con fin, estados finales sin fin, fin anterior
+  al inicio y contadores negativos: rechazados por restricciones.
+- `partial` y `failed` sin `error_details` util, o con un JSON que no sea
+  objeto: rechazados. Un detalle por tarea se conserva como objeto JSON.
+- RLS activa sin politicas; `anon` y `authenticated` no pueden leer, insertar,
+  actualizar ni borrar; `service_role` puede insertar, leer y actualizar, pero
+  no borrar.
+- Privilegios efectivos de `service_role` sobre la tabla: exactamente `SELECT`,
+  `INSERT` y `UPDATE`; sin `DELETE`, `TRUNCATE`, `REFERENCES` ni `TRIGGER`.
+  La transicion `running` a un estado terminal se realiza con `UPDATE`.
+- Secuencia: `service_role` tiene `USAGE` y `SELECT`; `anon` y `authenticated`
+  no tienen `USAGE`, `SELECT` ni `UPDATE`. Intentos de `nextval` o de leer
+  `last_value` como esos roles fallan con `permission denied for sequence`.
+- La migracion no crea `run_maintenance` ni modifica tablas historicas.
+
 ## 8. Subtareas
 
 ### T-004-1: Modulo de identificacion de visitante
@@ -518,6 +539,14 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 `tests/integration/rate-limit-concurrency.test.ts`, `tests/integration/schema.test.ts`
 **Criterios:** retencion minima de 25 h, borrado por lotes, concurrencia segura,
 RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
+
+### T-004-8.4: Tabla de auditoria del mantenimiento
+**Archivos:** `supabase/migrations/023_maintenance_runs.sql`,
+`tests/integration/maintenance-runs.test.ts`, `tests/integration/schema.test.ts`
+**Criterios:** registrar ejecuciones `running`/`success`/`partial`/`failed`,
+contadores por tarea, duracion derivada, errores en JSON, RLS sin politicas y
+permisos de `service_role`, pruebas en PostgreSQL 17. No crea
+`run_maintenance`.
 
 ## 9. Decisiones aprobadas
 
@@ -610,9 +639,44 @@ RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
 - La prueba de dos limpiezas es determinista: un gate transaccional mantiene la
   primera llamada activa y la segunda se ejecuta solo cuando la primera ya
   retiene el lock; no depende de pausas arbitrarias.
-- Estado de validación: commit local 844784d (390/390 en ese commit); cambios
-  posteriores de auditoría sin commit (391/391); sin push; aprobación de
-  producción pendiente.
+- Estado de validación: commits locales 844784d (390/390) y 1708ede (auditoría,
+  391/391); sin push; aprobación de producción pendiente.
+
+### 10.2 Auditoría del mantenimiento (T-004-8.4)
+
+- `public.maintenance_runs` registra cada ejecución futura de `run_maintenance`.
+  La migración `023_maintenance_runs.sql` crea solo el esquema; no implementa la
+  función, endpoints ni schedulers.
+- La especificación no define campos explícitos. El diseño cubre las tres tareas
+  ya implementadas y las ejecuciones parciales o fallidas:
+  `status` (`running`, `success`, `partial`, `failed`), contadores
+  `expired_quota_reservations`, `reconciled_budget_reservations` y
+  `deleted_rate_limit_events`, y `error_details` como objeto JSON por tarea.
+- `started_at` usa `clock_timestamp()`; `finished_at` es nullable mientras la
+  ejecución está en curso. `duration_ms` es una columna generada y almacenada
+  (`finished_at - started_at` en ms), nula mientras `status = 'running'`.
+- Restricciones: fin posterior o igual al inicio; coherencia exacta entre
+  `status = 'running'` y `finished_at IS NULL`; `partial` y `failed` exigen
+  `error_details` no vacío; contadores no negativos.
+- Índices: `idx_maintenance_runs_started_at (started_at DESC)` para historial e
+  `idx_maintenance_runs_running (started_at) WHERE status = 'running'`.
+- RLS activo sin políticas. Tabla y secuencia revocadas a `PUBLIC`, `anon` y
+  `authenticated`; `service_role` recibe `SELECT, INSERT, UPDATE` y
+  `USAGE, SELECT` sobre la secuencia. No se otorga `DELETE`: la tabla es un
+  registro de auditoría. La transición de `running` a un estado terminal se hace
+  con `UPDATE`; no se añadió trigger de inmutabilidad porque bloquearía esa
+  transición.
+- Permisos efectivos comprobados en runtime: `service_role` tiene exactamente
+  `SELECT, INSERT, UPDATE` sobre la tabla, puede completar una ejecución
+  `running` y no puede borrarla. `anon` y `authenticated` no tienen privilegios
+  de tabla ni de secuencia; sus intentos de `nextval` y `last_value` fallan.
+- Pruebas: 13 de integración en PostgreSQL 17 y 8 estáticas de la migración 023.
+  Cubren defaults, duración, restricciones, RLS, privilegios efectivos de
+  `service_role`, denegación de `DELETE`, privilegios de secuencia y ausencia de
+  `run_maintenance`.
+- Validación: 412/412 pruebas; lint, typecheck y build exitosos. Sin cambios en
+  `src/**`, contratos públicos ni migraciones históricas.
+- Estado: implementado localmente, sin commit y sin push; aprobación pendiente.
 
 ## 11. Bloqueantes de producción (Fase 4)
 
@@ -621,13 +685,16 @@ RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
   incierto, el rate limit de ventana móvil, las correcciones de expiración de
   cuota, de reconciliación de presupuesto y de timestamps de transición, y la
   limpieza global de eventos de rate limit están implementadas y validadas
-  localmente (390/390 en el commit 844784d; 391/391 tras los cambios de
-  auditoría sin commit), pero no aprobadas para producción. `AI_ENABLED=false`
-  y `realCallsAuthorized=false` se mantienen.
+  localmente (commits 844784d y 1708ede; 391/391), pero no aprobadas para
+  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
+- **PENDIENTE DE COMMIT — T-004-8.4.** La tabla `maintenance_runs` (023) está
+  implementada y validada localmente (412/412), pero sin commit ni push. No
+  requiere aprobación de producción porque aún no escribe datos.
 - **BLOQUEANTE — programación automática ausente.** La limpieza global ya existe
   como RPC `cleanup_rate_limit_events` (022), pero sin un job periódico no se
-  ejecuta; tampoco se consolidan las reservas de cuota ni de presupuesto. Afecta
-  crecimiento de tabla y liberación tardía de cuota.
+  ejecuta; tampoco se consolidan las reservas de cuota ni de presupuesto.
+  `maintenance_runs` (023) ya existe, pero `run_maintenance` todavía no la
+  escribe. Afecta crecimiento de tabla y liberación tardía de cuota.
 - **PENDIENTE — mecanismo automático de reconciliación de reservas.** No
   existe un job que invoque periódicamente `expire_pending_reservations()` y
   `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre

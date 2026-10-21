@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 22 archivos SQL', () => {
+    it('contiene 23 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(22);
+      expect(files).toHaveLength(23);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -39,6 +39,7 @@ describe('schema migrations', () => {
       expect(files[19]).toMatch(/^020_/);
       expect(files[20]).toMatch(/^021_/);
       expect(files[21]).toMatch(/^022_/);
+      expect(files[22]).toMatch(/^023_/);
     });
   });
 
@@ -413,6 +414,78 @@ describe('schema migrations', () => {
     });
   });
 
+  describe('migracion 023 tabla de auditoria del mantenimiento', () => {
+    const sql = readMigration('023_maintenance_runs.sql');
+
+    it('crea la tabla con identificador, inicio, fin y estado', () => {
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS public.maintenance_runs');
+      expect(sql).toContain('id BIGSERIAL PRIMARY KEY');
+      expect(sql).toContain('started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()');
+      expect(sql).toContain('finished_at TIMESTAMPTZ');
+      expect(sql).toContain("status VARCHAR(20) NOT NULL DEFAULT 'running'");
+    });
+
+    it('limita los estados de ejecucion', () => {
+      expect(sql).toContain("CHECK (status IN ('running', 'success', 'partial', 'failed'))");
+    });
+
+    it('define contadores no negativos para las tareas de mantenimiento', () => {
+      expect(sql).toContain('expired_quota_reservations INTEGER NOT NULL DEFAULT 0');
+      expect(sql).toContain('reconciled_budget_reservations INTEGER NOT NULL DEFAULT 0');
+      expect(sql).toContain('deleted_rate_limit_events INTEGER NOT NULL DEFAULT 0');
+      expect(sql.match(/INTEGER NOT NULL DEFAULT 0\s+CHECK \([a-z_]+ >= 0\)/g)).toHaveLength(3);
+    });
+
+    it('almacena errores como objeto JSON y los exige en partial o failed', () => {
+      expect(sql).toContain("error_details JSONB NOT NULL DEFAULT '{}'::JSONB");
+      expect(sql).toContain("CHECK (jsonb_typeof(error_details) = 'object')");
+      expect(sql).toContain('chk_maintenance_failure_details');
+      expect(sql).toContain("status NOT IN ('partial', 'failed') OR error_details <> '{}'::JSONB");
+    });
+
+    it('deriva duration_ms y valida la coherencia temporal', () => {
+      expect(sql).toContain('duration_ms BIGINT GENERATED ALWAYS AS (');
+      expect(sql).toContain('EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000');
+      expect(sql).toContain(') STORED');
+      expect(sql).toContain('chk_maintenance_finished_after_started');
+      expect(sql).toContain('chk_maintenance_finished_matches_status');
+      expect(sql).toContain("(status = 'running') = (finished_at IS NULL)");
+    });
+
+    it('crea indices para historial y ejecuciones en curso', () => {
+      expect(sql).toContain('idx_maintenance_runs_started_at');
+      expect(sql).toContain('ON public.maintenance_runs (started_at DESC)');
+      expect(sql).toContain('idx_maintenance_runs_running');
+      expect(sql).toContain("WHERE status = 'running'");
+    });
+
+    it('activa RLS y restringe el acceso a service_role', () => {
+      expect(sql).toContain('ALTER TABLE public.maintenance_runs ENABLE ROW LEVEL SECURITY');
+      expect(sql).toContain('REVOKE ALL ON TABLE public.maintenance_runs FROM PUBLIC');
+      expect(sql).toContain("REVOKE ALL ON TABLE public.maintenance_runs FROM anon");
+      expect(sql).toContain("REVOKE ALL ON TABLE public.maintenance_runs FROM authenticated");
+      expect(sql).toContain(
+        'GRANT SELECT, INSERT, UPDATE ON TABLE public.maintenance_runs TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT USAGE, SELECT ON SEQUENCE public.maintenance_runs_id_seq TO service_role'
+      );
+      expect(sql).toContain("REVOKE ALL ON SEQUENCE public.maintenance_runs_id_seq FROM anon");
+      expect(sql).toContain(
+        "REVOKE ALL ON SEQUENCE public.maintenance_runs_id_seq FROM authenticated"
+      );
+      expect(sql).not.toContain('GRANT DELETE');
+      expect(sql).not.toContain('GRANT UPDATE ON SEQUENCE');
+    });
+
+    it('no implementa run_maintenance ni modifica migraciones historicas', () => {
+      expect(sql).not.toContain('FUNCTION public.run_maintenance');
+      expect(sql).not.toContain('DROP TABLE');
+      expect(sql).not.toContain('ALTER TABLE public.quota_reservations');
+      expect(sql).not.toContain('ALTER TABLE public.ip_rate_limit_events');
+    });
+  });
+
   describe('tabla generation_records', () => {
     const sql = readMigration('003_create_generation_records.sql');
 
@@ -541,10 +614,14 @@ describe('schema migrations', () => {
         'generation_records',
         'budget_tracking',
         'ip_rate_limits',
+        'maintenance_runs',
       ];
 
       for (const table of tables) {
-        const tableSection = allSql.split(`CREATE TABLE IF NOT EXISTS ${table}`)[1]?.split(');')[0] || '';
+        const tableSection =
+          allSql
+            .split(new RegExp(`CREATE TABLE IF NOT EXISTS (?:public\\.)?${table}\\b`))[1]
+            ?.split(');')[0] || '';
         expect(tableSection).toContain('TIMESTAMPTZ');
       }
     });

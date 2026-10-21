@@ -4,26 +4,26 @@
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
-T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3 implementadas
-localmente. T-004-8.3 tiene commit local 844784d (390/390 en ese commit) y
-cambios posteriores de auditoria sin commit (391/391); sin push y sin aprobacion
-de produccion. T-004-8.4 en adelante pendiente y sin iniciar.
+T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b, T-004-8.3 y T-004-8.4
+implementadas localmente. T-004-8.3 tiene commits locales 844784d (390/390) y
+1708ede (auditoria, 391/391). T-004-8.4 (tabla de auditoria) esta implementada
+sin commit (412/412); sin push y con aprobacion de commit pendiente. T-004-8.5
+en adelante pendiente y sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-8.3 - Limpieza global de eventos de rate limit (commit local 844784d;
-cambios posteriores de auditoría sin commit; sin push; no aprobada para
-producción).
+T-004-8.4 - Tabla de auditoría del mantenimiento (cambios locales sin commit;
+sin push; aprobación de commit pendiente).
 
 ## Última tarea completada
 
-T-004-8.3 - Limpieza global de eventos de rate limit: RPC con retención mínima
-de 25 horas, borrado por lotes, concurrencia segura y permisos de
-`service_role` (commit local 844784d; cambios posteriores de auditoría sin
-commit; sin push; no aprobada para producción, 2026-10-20).
+T-004-8.4 - Tabla de auditoría del mantenimiento: migración 023 con estados,
+contadores, duración derivada, RLS y permisos mínimos para `service_role`;
+pruebas de integración en PostgreSQL 17 y pruebas estáticas (412/412, sin
+commit, 2026-10-20).
 
 ## Fase 3 — Cierre
 
@@ -363,8 +363,9 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   las RPC de cuota se aplico en T-004-8.2b (migracion 021).
 
 **Pendiente (T-004-8, continuacion)**
-- T-004-8.4 en adelante (tabla de auditoria, `run_maintenance`, endpoint) sin
-  autorizar; T-004-8.8 bloqueada por la decision de despliegue.
+- T-004-8.4 quedo implementada localmente sin commit. T-004-8.5 en adelante
+  (`run_maintenance`, endpoint) siguen sin autorizar; T-004-8.8 esta bloqueada
+  por la decision de despliegue.
 
 ## T-004-8.2b - Correccion de timestamps de transicion de cuota (local, no aprobado)
 
@@ -444,13 +445,46 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   de `reconciliation.test.ts` (de 1-2 minutos a 5-10 minutos) para tolerar
   regresiones del reloj del contenedor observadas durante la validacion. No
   cambia la logica de produccion.
-- Total: 390/390 en el commit 844784d; 391/391 tras los cambios de auditoria sin
-  commit. Lint, typecheck y build exitosos. La validacion previa registro 10/10
-  corridas completas; esta auditoria ejecuto una corrida completa.
+- Total: 390/390 en el commit 844784d; 391/391 tras la auditoria, committeada en
+  1708ede. Lint, typecheck y build exitosos.
 - Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
   realCallsAuthorized=false.
-- Estado: commit local 844784d; cambios posteriores de auditoria sin commit; sin
-  push; aprobacion de produccion pendiente.
+- Estado: commits locales 844784d y 1708ede; sin push; aprobacion de produccion
+  pendiente.
+
+## T-004-8.4 - Tabla de auditoria del mantenimiento (local, sin commit; no aprobado)
+
+- `supabase/migrations/023_maintenance_runs.sql` (nueva; 001-022 intactas):
+  `public.maintenance_runs` para registrar cada ejecucion futura de
+  `run_maintenance`. No crea la funcion, endpoints ni schedulers.
+- La especificacion no define campos para esta tabla; el diseno cubre las tres
+  tareas ya implementadas y las ejecuciones parciales o fallidas.
+- Columnas: `id BIGSERIAL`, `started_at TIMESTAMPTZ DEFAULT clock_timestamp()`,
+  `finished_at TIMESTAMPTZ` nullable, `status VARCHAR(20) DEFAULT 'running'`
+  (`running`, `success`, `partial`, `failed`), contadores
+  `expired_quota_reservations`, `reconciled_budget_reservations` y
+  `deleted_rate_limit_events` (`INTEGER >= 0`), `error_details JSONB` (objeto,
+  `'{}'` por defecto) y `duration_ms BIGINT GENERATED ... STORED`.
+- `duration_ms` se calcula de `finished_at - started_at` en milisegundos y es
+  `NULL` mientras la ejecucion esta `running`; se actualiza al completar.
+- Restricciones: `finished_at >= started_at`; `(status = 'running') =
+  (finished_at IS NULL)`; `partial` y `failed` exigen `error_details` no vacio.
+- Indices: historial por `started_at DESC` y parcial para ejecuciones `running`.
+- RLS activo sin politicas; tabla y secuencia revocadas a `PUBLIC`, `anon` y
+  `authenticated`; `service_role` recibe exactamente `SELECT, INSERT, UPDATE`
+  sobre la tabla y `USAGE, SELECT` sobre la secuencia. No se otorga `DELETE`.
+  La transicion `running` a estado terminal usa `UPDATE`; no se añade trigger de
+  inmutabilidad porque bloquearia esa transicion.
+- Pruebas nuevas: 13 de integracion en PostgreSQL 17 (esquema/defaults,
+  ejecucion running, duracion de 2500 ms y 1500 ms, estados invalidos,
+  coherencia status/fin, orden temporal, contadores negativos, `error_details`,
+  RLS, denegacion a `anon`/`authenticated`, acceso de `service_role`, privilegios
+  efectivos de tabla y secuencia, actualizacion `running` a terminal, denegacion
+  de `DELETE` y ausencia de `run_maintenance`) y 8 estaticas de la migracion 023.
+  Total: 412/412.
+- Sin cambios en `src/**`, contratos publicos ni migraciones historicas.
+  AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado localmente, sin commit y sin push; aprobacion pendiente.
 
 ## Decisiones arquitectonicas
 
@@ -493,23 +527,27 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 
 **Bloqueantes de producción (Fase 4):**
 1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3
-   implementadas y validadas localmente (390/390 en el commit 844784d; 391/391
-   tras los cambios de auditoria sin commit), pero sin aprobación para
-   producción. `AI_ENABLED=false` y `realCallsAuthorized=false`.
+   implementadas y validadas localmente (commits 844784d y 1708ede; 391/391),
+   pero sin aprobación para producción. `AI_ENABLED=false` y
+   `realCallsAuthorized=false`.
 2. Programación automática ausente: sin job periódico, la RPC
    `cleanup_rate_limit_events` (022) no se ejecuta sola y las reservas de cuota
-   y presupuesto no se consolidan.
+   y presupuesto no se consolidan. La tabla `maintenance_runs` (023) ya existe,
+   pero todavía no hay `run_maintenance` que escriba en ella.
+3. T-004-8.4 implementada localmente sin commit (412/412); requiere revisión y
+   autorización para commit.
 
 **Pendientes:**
 1. Mecanismo automático de reconciliación de reservas y de limpieza de eventos.
 2. Verificación del modelo predeterminado de Groq.
 3. Programación de `cleanup_rate_limit_events` y de las RPC de reconciliación
    (T-004-8.8).
-4. Aprobación de producción de T-004-8.3 (commit local 844784d; cambios
-   posteriores de auditoria sin commit; push pendiente).
+4. Aprobación de producción de T-004-8.3 (commits locales 844784d y 1708ede;
+   push pendiente).
+5. Autorización de commit para T-004-8.4.
 
 ## Siguiente tarea propuesta
 
-T-004-8.4 - Tabla de auditoría del mantenimiento (propuesta; requiere
-autorización). No iniciar sin autorización.
+T-004-8.5 - `run_maintenance` y registro en `maintenance_runs` (propuesta;
+requiere autorización). No iniciar sin autorización.
 

@@ -489,7 +489,7 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Aislamiento: los fixtures que invocan la funcion global expire_pending_reservations borran generation_records y quota_reservations antes de sembrar, y las pruebas de sent_uncertain ejecutan siembra, expiracion y lectura en una sola transaccion.
 - Hallazgo: las RPC de cuota (011/015/017) escriben completed_at con NOW(), que es el inicio de la transaccion; una transaccion larga que actualiza filas creadas por otras transiciones puede escribir un completed_at anterior al created_at y violar chk_completed_after_created. Reproducido en PostgreSQL 17. El proceso programado de T-004-8 ejecuta sus tareas en una sola transaccion, por lo que es un riesgo real; la correccion propuesta (usar clock_timestamp) NO se aplica sin autorizacion.
 - Total: 365/365. Lint, typecheck y build exitosos.
-- Pendiente: T-004-8.4 en adelante sigue sin autorizar.
+- Pendiente en ese momento: T-004-8.4 en adelante seguia sin autorizar.
 - Estado: implementado y committeado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
 
 ## 2026-10-20 — T-004-8.2b: correccion de timestamps de transicion de cuota
@@ -521,4 +521,17 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Robustez de pruebas: se ampliaron los margenes de expiracion de los fixtures de reconciliation.test.ts (de 1-2 minutos a 5-10 minutos) para tolerar regresiones del reloj del contenedor. No cambia la logica de produccion.
 - Lint, typecheck y build exitosos. La validacion previa registro 10/10 corridas completas; la auditoria actual ejecuto una corrida completa (391/391).
 - Sin cambios en src/lib/** ni en contratos publicos. AI_ENABLED=false y realCallsAuthorized=false.
-- Estado: commit local 844784d (390/390 en ese commit); cambios posteriores de auditoria sin commit (prueba de dos limpiezas concurrentes y actualizacion documental, 391/391). Sin push. No aprobado para produccion. La programacion periodica sigue pendiente (T-004-8.8).
+- Estado: commits locales 844784d (390/390) y 1708ede (auditoria, 391/391). Sin push. No aprobado para produccion. La programacion periodica sigue pendiente (T-004-8.8).
+
+## 2026-10-20 — T-004-8.4: tabla de auditoria del mantenimiento
+
+- supabase/migrations/023_maintenance_runs.sql (nueva; 001-022 intactas): tabla public.maintenance_runs para registrar ejecuciones futuras de run_maintenance. No crea la funcion, endpoints ni schedulers.
+- La especificacion no define campos explicitos. El diseno cubre las tres tareas implementadas: expired_quota_reservations, reconciled_budget_reservations y deleted_rate_limit_events, ademas de error_details por tarea.
+- Columnas: id BIGSERIAL, started_at TIMESTAMPTZ DEFAULT clock_timestamp(), finished_at nullable, status VARCHAR(20) DEFAULT 'running' (running, success, partial, failed), contadores INTEGER >= 0, error_details JSONB (objeto, '{}' por defecto) y duration_ms BIGINT GENERATED STORED.
+- duration_ms se deriva de finished_at - started_at en milisegundos y es NULL mientras la ejecucion esta running; se actualiza al completar.
+- Restricciones: finished_at >= started_at; (status = 'running') = (finished_at IS NULL); partial y failed exigen error_details no vacio.
+- Indices: idx_maintenance_runs_started_at (started_at DESC) e idx_maintenance_runs_running parcial WHERE status = 'running'.
+- RLS activo sin politicas; tabla y secuencia revocadas a PUBLIC, anon y authenticated; service_role recibe exactamente SELECT, INSERT, UPDATE y USAGE, SELECT sobre la secuencia, sin DELETE ni UPDATE de secuencia. La transicion de running a terminal usa UPDATE; no se anadio trigger de inmutabilidad porque bloquearia esa transicion.
+- Pruebas nuevas: 13 de integracion en PostgreSQL 17 (esquema/defaults, running sin duracion, duracion de 2500 ms y 1500 ms, estados invalidos, coherencia status/fin, orden temporal, contadores negativos, error_details, RLS, denegacion a anon/authenticated, acceso de service_role, privilegios efectivos de tabla y secuencia, actualizacion de running a terminal, denegacion de DELETE a service_role y ausencia de run_maintenance) y 8 estaticas de la migracion 023. Total: 412/412.
+- Sin cambios en src/**, contratos publicos ni migraciones historicas. AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado localmente, sin commit y sin push. Aprobacion de commit pendiente.
