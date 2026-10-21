@@ -516,8 +516,9 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Indice nuevo idx_ip_rate_events_accepted_at_id (accepted_at, id) para el barrido global; se conserva idx_ip_rate_events (ip_address, accepted_at DESC).
 - No se modifico check_rate_limit: limites, ventanas, respuesta JSON y limpieza por IP permanecen intactos.
 - RLS activo sin politicas; EXECUTE revocado a PUBLIC, anon y authenticated, concedido a service_role; SET search_path = public, pg_temp.
-- Pruebas nuevas: 5 de integracion (retencion de 25/24/23 horas, idempotencia, 2500 eventos con lotes de 100, concurrencia con check_rate_limit, RLS y permisos) y 6 estaticas de la migracion 022. Total: 390/390.
+- Pruebas nuevas: 6 de integracion (retencion de 25/24/23 horas, idempotencia, 2500 eventos con lotes de 100, concurrencia con check_rate_limit, dos limpiezas simultaneas con advisory lock, RLS y permisos) y 6 estaticas de la migracion 022. Total tras la auditoria: 391/391.
+- Concurrencia de dos limpiezas: prueba determinista en PostgreSQL 17 que mantiene la primera llamada activa con un gate transaccional, verifica que la segunda retorna 0 con el advisory lock retenido y que la primera elimina exactamente los eventos sembrados.
 - Robustez de pruebas: se ampliaron los margenes de expiracion de los fixtures de reconciliation.test.ts (de 1-2 minutos a 5-10 minutos) para tolerar regresiones del reloj del contenedor. No cambia la logica de produccion.
-- Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
+- Lint, typecheck y build exitosos. La validacion previa registro 10/10 corridas completas; la auditoria actual ejecuto una corrida completa (391/391).
 - Sin cambios en src/lib/** ni en contratos publicos. AI_ENABLED=false y realCallsAuthorized=false.
-- Estado: implementado localmente, no aprobado para produccion; sin commit ni push. La programacion periodica sigue pendiente (T-004-8.8).
+- Estado: commit local 844784d (390/390 en ese commit); cambios posteriores de auditoria sin commit (prueba de dos limpiezas concurrentes y actualizacion documental, 391/391). Sin push. No aprobado para produccion. La programacion periodica sigue pendiente (T-004-8.8).

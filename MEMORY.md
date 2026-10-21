@@ -5,23 +5,25 @@
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
 T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3 implementadas
-localmente (390/390, 10/10 corridas completas de `pnpm test` en verde);
-T-004-8.4 en adelante pendiente y sin iniciar.
+localmente. T-004-8.3 tiene commit local 844784d (390/390 en ese commit) y
+cambios posteriores de auditoria sin commit (391/391); sin push y sin aprobacion
+de produccion. T-004-8.4 en adelante pendiente y sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-8.3 - Limpieza global de eventos de rate limit (implementada localmente,
-no aprobada para producción).
+T-004-8.3 - Limpieza global de eventos de rate limit (commit local 844784d;
+cambios posteriores de auditoría sin commit; sin push; no aprobada para
+producción).
 
 ## Última tarea completada
 
 T-004-8.3 - Limpieza global de eventos de rate limit: RPC con retención mínima
 de 25 horas, borrado por lotes, concurrencia segura y permisos de
-`service_role` (implementada localmente, no aprobada para producción,
-2026-10-20).
+`service_role` (commit local 844784d; cambios posteriores de auditoría sin
+commit; sin push; no aprobada para producción, 2026-10-20).
 
 ## Fase 3 — Cierre
 
@@ -403,7 +405,7 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 - Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
   realCallsAuthorized=false.
 
-## T-004-8.3 - Limpieza global de eventos de rate limit (local, no aprobado)
+## T-004-8.3 - Limpieza global de eventos de rate limit (commit local; cambios posteriores sin commit; no aprobado)
 
 - `supabase/migrations/022_cleanup_rate_limit_events.sql` (nueva; 001-021
   intactas): `public.cleanup_rate_limit_events(p_retention INTERVAL DEFAULT
@@ -430,18 +432,25 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   por IP permanecen intactos.
 - RLS activo sin politicas; `EXECUTE` revocado a `PUBLIC`, `anon` y
   `authenticated`, concedido a `service_role`; `SET search_path = public, pg_temp`.
-- Pruebas nuevas: 5 de integracion (retencion de 25/24/23 horas, idempotencia,
-  2500 eventos con lotes de 100, concurrencia con `check_rate_limit`, RLS y
-  permisos) y 6 estaticas de la migracion 022.
+- Pruebas nuevas: 6 de integracion (retencion de 25/24/23 horas, idempotencia,
+  2500 eventos con lotes de 100, concurrencia con `check_rate_limit`, dos
+  limpiezas simultaneas con advisory lock, RLS y permisos) y 6 estaticas de la
+  migracion 022.
+- Concurrencia de dos limpiezas: prueba determinista en PostgreSQL 17 que
+  mantiene la primera llamada activa con un gate transaccional, verifica que la
+  segunda retorna 0 con el advisory lock retenido y que la primera elimina
+  exactamente los eventos sembrados.
 - Robustez de pruebas: se ampliaron los margenes de expiracion de los fixtures
   de `reconciliation.test.ts` (de 1-2 minutos a 5-10 minutos) para tolerar
   regresiones del reloj del contenedor observadas durante la validacion. No
   cambia la logica de produccion.
-- Total: 390/390. Lint, typecheck y build exitosos. 10/10 corridas completas de
-  `pnpm test` en verde.
+- Total: 390/390 en el commit 844784d; 391/391 tras los cambios de auditoria sin
+  commit. Lint, typecheck y build exitosos. La validacion previa registro 10/10
+  corridas completas; esta auditoria ejecuto una corrida completa.
 - Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
   realCallsAuthorized=false.
-- Sin commit ni push; pendiente de autorizacion.
+- Estado: commit local 844784d; cambios posteriores de auditoria sin commit; sin
+  push; aprobacion de produccion pendiente.
 
 ## Decisiones arquitectonicas
 
@@ -484,7 +493,8 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 
 **Bloqueantes de producción (Fase 4):**
 1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3
-   implementadas y validadas localmente (390/390), pero sin aprobación para
+   implementadas y validadas localmente (390/390 en el commit 844784d; 391/391
+   tras los cambios de auditoria sin commit), pero sin aprobación para
    producción. `AI_ENABLED=false` y `realCallsAuthorized=false`.
 2. Programación automática ausente: sin job periódico, la RPC
    `cleanup_rate_limit_events` (022) no se ejecuta sola y las reservas de cuota
@@ -495,7 +505,8 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 2. Verificación del modelo predeterminado de Groq.
 3. Programación de `cleanup_rate_limit_events` y de las RPC de reconciliación
    (T-004-8.8).
-4. Commit de T-004-8.3 (espera autorización explícita).
+4. Aprobación de producción de T-004-8.3 (commit local 844784d; cambios
+   posteriores de auditoria sin commit; push pendiente).
 
 ## Siguiente tarea propuesta
 

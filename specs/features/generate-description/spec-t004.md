@@ -471,6 +471,9 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 - Concurrencia entre `cleanup_rate_limit_events` y `check_rate_limit`: la ventana
   reciente sigue siendo exacta, los eventos antiguos desaparecen y no hay
   errores de bloqueo.
+- Dos limpiezas simultaneas: la primera mantiene el advisory lock mientras sigue
+  activa; la segunda retorna 0 sin interferir y la primera elimina los eventos
+  elegibles una sola vez.
 - RLS activo, `search_path` seguro y `EXECUTE` restringido a `service_role`.
 
 ## 8. Subtareas
@@ -603,7 +606,13 @@ RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
   `authenticated`, y concedido a `service_role`; `SET search_path = public, pg_temp`.
 - Pruebas: eliminación de más de 25 h; conservación de 23 h y 24 h; idempotencia;
   2500 eventos procesados con lotes de 100; concurrencia con `check_rate_limit`;
-  RLS y permisos RPC.
+  dos limpiezas simultáneas con advisory lock retenido; RLS y permisos RPC.
+- La prueba de dos limpiezas es determinista: un gate transaccional mantiene la
+  primera llamada activa y la segunda se ejecuta solo cuando la primera ya
+  retiene el lock; no depende de pausas arbitrarias.
+- Estado de validación: commit local 844784d (390/390 en ese commit); cambios
+  posteriores de auditoría sin commit (391/391); sin push; aprobación de
+  producción pendiente.
 
 ## 11. Bloqueantes de producción (Fase 4)
 
@@ -612,8 +621,9 @@ RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
   incierto, el rate limit de ventana móvil, las correcciones de expiración de
   cuota, de reconciliación de presupuesto y de timestamps de transición, y la
   limpieza global de eventos de rate limit están implementadas y validadas
-  localmente (390/390, 10/10 corridas completas), pero no aprobadas para
-  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
+  localmente (390/390 en el commit 844784d; 391/391 tras los cambios de
+  auditoría sin commit), pero no aprobadas para producción. `AI_ENABLED=false`
+  y `realCallsAuthorized=false` se mantienen.
 - **BLOQUEANTE — programación automática ausente.** La limpieza global ya existe
   como RPC `cleanup_rate_limit_events` (022), pero sin un job periódico no se
   ejecuta; tampoco se consolidan las reservas de cuota ni de presupuesto. Afecta

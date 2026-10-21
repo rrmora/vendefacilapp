@@ -511,6 +511,119 @@ describe('rate limit sliding window integration', () => {
     expect(Number(recentCount)).toBe(10);
   }, 60000);
 
+  it('dos limpiezas concurrentes: la segunda retorna 0 mientras la primera mantiene el advisory lock', async () => {
+    const ip = '198.51.100.230';
+    const lockHolderApp = 'vf-cleanup-lock-holder';
+    const firstCleanupApp = 'vf-cleanup-first';
+    const secondCleanupApp = 'vf-cleanup-second';
+    let holder: Promise<{ stdout: string; stderr: string }> | undefined;
+    let first: Promise<{ stdout: string; stderr: string }> | undefined;
+
+    const terminate = (applicationName: string) => {
+      try {
+        sql(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '${applicationName}' AND pid <> pg_backend_pid();`
+        );
+      } catch {
+      }
+    };
+
+    const waitFor = async (statement: string, expected: string, description: string) => {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        if (sql(statement).trim() === expected) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`Timeout esperando ${description}`);
+    };
+
+    try {
+      rows(`
+        SELECT public.cleanup_rate_limit_events();
+        DELETE FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+        INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+        SELECT '${ip}'::inet, clock_timestamp() - INTERVAL '26 hours'
+        FROM generate_series(1, 3);
+
+        DROP TRIGGER IF EXISTS vf_cleanup_gate ON public.ip_rate_limit_events;
+        DROP FUNCTION IF EXISTS public.vf_cleanup_gate();
+
+        CREATE FUNCTION public.vf_cleanup_gate() RETURNS trigger
+        LANGUAGE plpgsql AS $gate$
+        BEGIN
+          IF current_setting('vf.cleanup_gate', true) = 'wait' THEN
+            PERFORM pg_advisory_lock(hashtextextended('vf.cleanup.release', 0));
+          END IF;
+          RETURN NULL;
+        END;
+        $gate$;
+
+        CREATE TRIGGER vf_cleanup_gate
+          BEFORE DELETE ON public.ip_rate_limit_events
+          FOR EACH STATEMENT EXECUTE FUNCTION public.vf_cleanup_gate();
+      `, 'cleanup-two-calls-setup');
+
+      holder = execAsync(
+        `docker exec -e PGAPPNAME=${lockHolderApp} ${CONTAINER_NAME} psql -U testuser -d testdb -v ON_ERROR_STOP=1 -t -A -c "SELECT pg_advisory_lock(hashtextextended('vf.cleanup.release', 0)); SELECT pg_sleep(120);"`
+      );
+      holder.catch(() => undefined);
+
+      await waitFor(
+        `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = '${lockHolderApp}';`,
+        '1',
+        'el lock de liberacion'
+      );
+
+      first = execAsync(
+        `docker exec -e PGAPPNAME=${firstCleanupApp} ${CONTAINER_NAME} psql -U testuser -d testdb -v ON_ERROR_STOP=1 -t -A -c "SET vf.cleanup_gate = 'wait'; SELECT public.cleanup_rate_limit_events();"`
+      );
+      first.catch(() => undefined);
+
+      await waitFor(
+        `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE l.locktype = 'advisory' AND NOT l.granted AND a.application_name = '${firstCleanupApp}';`,
+        '1',
+        'la primera limpieza bloqueada en el gate'
+      );
+
+      const second = await execAsync(
+        `docker exec -e PGAPPNAME=${secondCleanupApp} ${CONTAINER_NAME} psql -U testuser -d testdb -v ON_ERROR_STOP=1 -t -A -c "SELECT public.cleanup_rate_limit_events();"`
+      );
+
+      expect(second.stdout.trim()).toBe('0');
+
+      terminate(lockHolderApp);
+
+      const firstResult = await first;
+      const firstOutput = firstResult.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+      expect(firstOutput[firstOutput.length - 1]).toBe('3');
+
+      const [remaining] = rows(`
+        SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+      `, 'cleanup-two-calls-check');
+
+      expect(Number(remaining)).toBe(0);
+    } finally {
+      terminate(lockHolderApp);
+      terminate(firstCleanupApp);
+      terminate(secondCleanupApp);
+      if (holder) {
+        await holder.catch(() => undefined);
+      }
+      if (first) {
+        await first.catch(() => undefined);
+      }
+      rows(`
+        DROP TRIGGER IF EXISTS vf_cleanup_gate ON public.ip_rate_limit_events;
+        DROP FUNCTION IF EXISTS public.vf_cleanup_gate();
+        DELETE FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+      `, 'cleanup-two-calls-teardown');
+    }
+  }, 90000);
+
   it('cleanup_rate_limit_events esta restringida a service_role y mantiene RLS', () => {
     const signature = 'public.cleanup_rate_limit_events(interval,integer)';
 

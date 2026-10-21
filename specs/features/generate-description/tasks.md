@@ -66,7 +66,7 @@ aceptación, validaciones.
     - T-004-8.1: Corrección de expiración de cuota ✅ (local, pendiente de aprobación)
     - T-004-8.2: Corrección de reconciliación de presupuesto ✅ (local, pendiente de aprobación)
     - T-004-8.2b: `completed_at` con `clock_timestamp()` en las RPC de cuota ✅ (local, pendiente de aprobación)
-    - T-004-8.3: Limpieza global de eventos de rate limit ✅ (local, pendiente de aprobación)
+    - T-004-8.3: Limpieza global de eventos de rate limit ✅ (commit local 844784d; cambios de auditoría sin commit; push y aprobación de producción pendientes)
     - T-004-8.4-8.7: tabla de auditoría, run_maintenance, endpoint y documentación (pendiente)
     - T-004-8.8: Programación real (pg_cron o Vercel Cron) — bloqueada: requiere decidir despliegue
   - Cierre de fase 4: documentación y validación final (pendiente)
