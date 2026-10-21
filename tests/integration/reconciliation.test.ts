@@ -119,7 +119,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes');
 
       INSERT INTO generation_records (visitor_id, reservation_id, success)
       VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, true);
@@ -147,7 +147,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes');
     `);
 
     const expired = query("SELECT expire_pending_reservations()");
@@ -180,7 +180,7 @@ describe('reconciliation integration', () => {
       VALUES ${reservationIds
         .map(
           (id) =>
-            `('${visitorId}'::uuid, '${id}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute')`
+            `('${visitorId}'::uuid, '${id}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes')`
         )
         .join(',\n      ')};`
     );
@@ -216,10 +216,10 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${firstVisitor}'::uuid, 'b16f6f00-2000-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
-             ('${firstVisitor}'::uuid, 'b26f6f00-2001-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
-             ('${secondVisitor}'::uuid, 'c16f6f00-2002-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
-             ('${secondVisitor}'::uuid, 'c26f6f00-2003-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+      VALUES ('${firstVisitor}'::uuid, 'b16f6f00-2000-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
+             ('${firstVisitor}'::uuid, 'b26f6f00-2001-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
+             ('${secondVisitor}'::uuid, 'c16f6f00-2002-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
+             ('${secondVisitor}'::uuid, 'c26f6f00-2003-4a10-8709-6d6d258f5562'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
              ('${firstVisitor}'::uuid, 'b36f6f00-2004-4a10-8709-6d6d258f5561'::uuid, 'pending', NOW() - INTERVAL '1 day 2 hours', NOW() - INTERVAL '1 day 1 hour');`
     );
 
@@ -246,7 +246,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');`
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes');`
     );
 
     const first = query('SELECT expire_pending_reservations()');
@@ -279,7 +279,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${expiredReservation}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
+      VALUES ('${visitorId}'::uuid, '${expiredReservation}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
              ('${visitorId}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW(), NOW() + INTERVAL '5 minutes');`
     );
 
@@ -336,7 +336,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '3 minutes');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '10 minutes');
     `);
 
     const first = query(`SELECT mark_quota_sent('${reservationId}'::uuid)`);
@@ -366,7 +366,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes');
 
       SELECT expire_pending_reservations();
       SELECT status FROM quota_reservations WHERE reservation_id = '${reservationId}'::uuid;
@@ -397,7 +397,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes');
 
       INSERT INTO generation_records (visitor_id, reservation_id, success)
       VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, true);
@@ -424,7 +424,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '3 minutes');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '10 minutes');
     `);
 
     const first = query(`SELECT confirm_quota('${reservationId}'::uuid)`);
@@ -448,7 +448,7 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO NOTHING;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '3 minutes');
+      VALUES ('${visitorId}'::uuid, '${reservationId}'::uuid, 'sent_uncertain', NOW() - INTERVAL '2 minutes', NOW() + INTERVAL '10 minutes');
     `);
 
     const released = query(`SELECT release_quota('${reservationId}'::uuid)`);
@@ -870,9 +870,9 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO UPDATE SET generations_used = EXCLUDED.generations_used;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${visitorId}'::uuid, '${expiredReservation}'::uuid, 'pending', NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute'),
-             ('${visitorId}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes'),
-             ('${visitorId}'::uuid, '${releasedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes');`
+      VALUES ('${visitorId}'::uuid, '${expiredReservation}'::uuid, 'pending', NOW() - INTERVAL '10 minutes', NOW() - INTERVAL '5 minutes'),
+             ('${visitorId}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '10 minutes'),
+             ('${visitorId}'::uuid, '${releasedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '10 minutes');`
     );
 
     const [expiration, confirmation, release] = await Promise.all([
@@ -955,8 +955,8 @@ describe('reconciliation integration', () => {
       ON CONFLICT (visitor_id, quota_date) DO UPDATE SET generations_used = EXCLUDED.generations_used;
 
       INSERT INTO quota_reservations (visitor_id, reservation_id, status, created_at, expires_at)
-      VALUES ('${confirmedVisitor}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes'),
-             ('${releasedVisitor}'::uuid, '${releasedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '5 minutes');`
+      VALUES ('${confirmedVisitor}'::uuid, '${confirmedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '10 minutes'),
+             ('${releasedVisitor}'::uuid, '${releasedReservation}'::uuid, 'pending', NOW() - INTERVAL '1 minute', NOW() + INTERVAL '10 minutes');`
     );
 
     query(`SELECT confirm_quota('${confirmedReservation}'::uuid)`);

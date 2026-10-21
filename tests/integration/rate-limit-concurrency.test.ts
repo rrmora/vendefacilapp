@@ -391,4 +391,151 @@ describe('rate limit sliding window integration', () => {
     }
     expect(failed).toBe(true);
   });
+
+  it('cleanup_rate_limit_events elimina eventos con mas de 25 horas y conserva 24 y 23 horas', () => {
+    const oldIp = '198.51.100.201';
+    const dayIp = '198.51.100.202';
+    const recentIp = '198.51.100.203';
+
+    rows(`
+      DELETE FROM ip_rate_limit_events
+        WHERE ip_address IN ('${oldIp}'::inet, '${dayIp}'::inet, '${recentIp}'::inet);
+      SELECT public.cleanup_rate_limit_events();
+      INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+      VALUES ('${oldIp}'::inet, clock_timestamp() - INTERVAL '26 hours'),
+             ('${dayIp}'::inet, clock_timestamp() - INTERVAL '24 hours'),
+             ('${recentIp}'::inet, clock_timestamp() - INTERVAL '23 hours');
+    `, 'cleanup-retention-seed');
+
+    const [deleted, oldLeft, dayLeft, recentLeft] = rows(`
+      SELECT public.cleanup_rate_limit_events();
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${oldIp}'::inet;
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${dayIp}'::inet;
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${recentIp}'::inet;
+    `, 'cleanup-retention-check');
+
+    expect(Number(deleted)).toBe(1);
+    expect(Number(oldLeft)).toBe(0);
+    expect(Number(dayLeft)).toBe(1);
+    expect(Number(recentLeft)).toBe(1);
+  });
+
+  it('cleanup_rate_limit_events es idempotente en ejecuciones repetidas', () => {
+    const ip = '198.51.100.204';
+
+    rows(`
+      DELETE FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+      SELECT public.cleanup_rate_limit_events();
+      INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+      VALUES ('${ip}'::inet, clock_timestamp() - INTERVAL '26 hours');
+    `, 'cleanup-idempotent-seed');
+
+    const [first, second, left] = rows(`
+      SELECT public.cleanup_rate_limit_events();
+      SELECT public.cleanup_rate_limit_events();
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+    `, 'cleanup-idempotent-check');
+
+    expect(Number(first)).toBe(1);
+    expect(Number(second)).toBe(0);
+    expect(Number(left)).toBe(0);
+  });
+
+  it('cleanup_rate_limit_events procesa lotes grandes sin dejar eventos elegibles', () => {
+    const ip = '198.51.100.210';
+    const total = 2500;
+    const batchSize = 100;
+
+    rows(`
+      DELETE FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+      SELECT public.cleanup_rate_limit_events();
+      INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+      SELECT '${ip}'::inet, clock_timestamp() - INTERVAL '26 hours'
+      FROM generate_series(1, ${total});
+    `, 'cleanup-large-seed');
+
+    const [deleted, remaining, eligible] = rows(`
+      SELECT public.cleanup_rate_limit_events(INTERVAL '25 hours', ${batchSize});
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${ip}'::inet;
+      SELECT count(*) FROM ip_rate_limit_events WHERE accepted_at < clock_timestamp() - INTERVAL '25 hours';
+    `, 'cleanup-large-check');
+
+    expect(Number(deleted)).toBe(total);
+    expect(Number(remaining)).toBe(0);
+    expect(Number(eligible)).toBe(0);
+  }, 60000);
+
+  it('cleanup_rate_limit_events y check_rate_limit son seguros en concurrencia', async () => {
+    const cleanupIp = '198.51.100.221';
+    const checkIp = '198.51.100.222';
+
+    rows(`
+      DELETE FROM ip_rate_limit_events
+        WHERE ip_address IN ('${cleanupIp}'::inet, '${checkIp}'::inet);
+      SELECT public.cleanup_rate_limit_events();
+      INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+      VALUES ('${cleanupIp}'::inet, clock_timestamp() - INTERVAL '26 hours'),
+             ('${checkIp}'::inet, clock_timestamp() - INTERVAL '26 hours');
+      INSERT INTO ip_rate_limit_events (ip_address, accepted_at)
+      SELECT '${checkIp}'::inet, clock_timestamp() - make_interval(secs => i)
+      FROM generate_series(1, 9) AS i;
+    `, 'cleanup-concurrency-seed');
+
+    const [, check] = await Promise.all([
+      execAsync(
+        `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT public.cleanup_rate_limit_events();"`
+      ),
+      execAsync(
+        `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -t -A -c "SELECT public.check_rate_limit('${checkIp}'::inet);"`
+      ),
+    ]);
+
+    const response = parsePayload(check.stdout.split('\n')) as {
+      status: string;
+      counts: { minute: number };
+    };
+    const [oldCleanupLeft, oldCheckLeft, recentCount] = rows(`
+      SELECT count(*) FROM ip_rate_limit_events WHERE ip_address = '${cleanupIp}'::inet;
+      SELECT count(*) FROM ip_rate_limit_events
+        WHERE ip_address = '${checkIp}'::inet
+          AND accepted_at <= clock_timestamp() - INTERVAL '24 hours';
+      SELECT count(*) FROM ip_rate_limit_events
+        WHERE ip_address = '${checkIp}'::inet
+          AND accepted_at > clock_timestamp() - INTERVAL '60 seconds';
+    `, 'cleanup-concurrency-check');
+
+    expect(response.status).toBe('allowed');
+    expect(response.counts.minute).toBe(10);
+    expect(Number(oldCleanupLeft)).toBe(0);
+    expect(Number(oldCheckLeft)).toBe(0);
+    expect(Number(recentCount)).toBe(10);
+  }, 60000);
+
+  it('cleanup_rate_limit_events esta restringida a service_role y mantiene RLS', () => {
+    const signature = 'public.cleanup_rate_limit_events(interval,integer)';
+
+    expect(sql(`SELECT has_function_privilege('anon', '${signature}', 'EXECUTE');`).trim()).toBe('f');
+    expect(sql(`SELECT has_function_privilege('authenticated', '${signature}', 'EXECUTE');`).trim()).toBe('f');
+    expect(sql(`SELECT has_function_privilege('service_role', '${signature}', 'EXECUTE');`).trim()).toBe('t');
+    expect(
+      sql("SELECT relrowsecurity FROM pg_class WHERE oid = 'public.ip_rate_limit_events'::regclass;").trim()
+    ).toBe('t');
+    expect(
+      sql(
+        "SELECT proconfig FROM pg_proc WHERE oid = 'public.cleanup_rate_limit_events(interval,integer)'::regprocedure;"
+      ).trim()
+    ).toContain('search_path=public, pg_temp');
+
+    let failed = false;
+    try {
+      exec(
+        `docker exec ${CONTAINER_NAME} psql -U testuser -d testdb -v ON_ERROR_STOP=1 -t -A -c "SET ROLE anon; SELECT public.cleanup_rate_limit_events();"`
+      );
+    } catch (error) {
+      failed = true;
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message.toLowerCase()).toContain('permission denied');
+    }
+    expect(failed).toBe(true);
+  });
 });

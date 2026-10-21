@@ -462,6 +462,17 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 - `sent_uncertain` sigue sin liberarse automaticamente; RLS y permisos EXECUTE
   restringidos a `service_role` se conservan.
 
+### 7.10 Limpieza global de rate limit (T-004-8.3)
+- Eventos con mas de 25 horas: se eliminan.
+- Eventos con 23 horas y exactamente 24 horas: se conservan.
+- Ejecuciones repetidas: la segunda retorna 0 y no modifica nada.
+- Lote grande (2500 eventos, lotes de 100): al terminar no queda ningun evento
+  elegible y el total retornado coincide con el sembrado.
+- Concurrencia entre `cleanup_rate_limit_events` y `check_rate_limit`: la ventana
+  reciente sigue siendo exacta, los eventos antiguos desaparecen y no hay
+  errores de bloqueo.
+- RLS activo, `search_path` seguro y `EXECUTE` restringido a `service_role`.
+
 ## 8. Subtareas
 
 ### T-004-1: Modulo de identificacion de visitante
@@ -498,6 +509,12 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 
 ### T-004-8: Documentacion y validacion final
 **Criterios:** MEMORY/CHANGELOG actualizados, lint/typecheck/test/build.
+
+### T-004-8.3: Limpieza global de eventos de rate limit
+**Archivos:** `supabase/migrations/022_cleanup_rate_limit_events.sql`,
+`tests/integration/rate-limit-concurrency.test.ts`, `tests/integration/schema.test.ts`
+**Criterios:** retencion minima de 25 h, borrado por lotes, concurrencia segura,
+RLS y permisos de `service_role`, pruebas en PostgreSQL 17.
 
 ## 9. Decisiones aprobadas
 
@@ -551,29 +568,66 @@ Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos contr
 - PostgreSQL no disponible: `RateLimiterError` (fail-closed); no se omite
   el control.
 - Limpieza: cada verificación elimina únicamente los eventos de esa IP con más
-  de 24 horas (barrido acotado por índice). **La limpieza global de eventos
-  antiguos requiere el job externo pendiente (pg_cron/cron del host), igual que
-  la reconciliación de reservas.**
+  de 24 horas (barrido acotado por índice). La limpieza global de eventos
+  antiguos está implementada en `cleanup_rate_limit_events` (migración 022,
+  T-004-8.3); su ejecución periódica sigue pendiente del scheduler (T-004-8.8).
 - Riesgo documentado: la columna `ip_address INET` almacena la IP
   completa durante la ventana activa. Alternativa futura de HMAC requiere
   cambiar la columna a `TEXT`/`bytea` y añadir secreto del servidor;
   no aplicar sin autorización.
 - No integrado todavía en `/api/generate` (T-004-6).
 
+### 10.1 Limpieza global de eventos (T-004-8.3)
+
+- `cleanup_rate_limit_events(p_retention INTERVAL DEFAULT INTERVAL '25 hours',
+  p_batch_size INTEGER DEFAULT 1000)` elimina globalmente eventos de
+  `ip_rate_limit_events`.
+- Retención mínima de 25 h: 1 h de margen sobre la ventana móvil de 24 h para
+  cubrir desfases de reloj. Una retención menor lanza excepción para que ninguna
+  llamada borre eventos que `check_rate_limit` todavía necesita.
+- Borrado por lotes: cada `DELETE` toma hasta `p_batch_size` filas elegibles con
+  `FOR UPDATE SKIP LOCKED`; el bucle continúa hasta que no quedan eventos y
+  retorna el total eliminado.
+- La función se ejecuta en una sola transacción RPC. El lote acota el trabajo y
+  los bloqueos por sentencia, no el tamaño total de la transacción. Un borrado
+  en múltiples transacciones requeriría un procedimiento con `COMMIT` o el
+  scheduler de T-004-8.8, fuera de este alcance.
+- Concurrencia: `pg_try_advisory_xact_lock` serializa las limpiezas globales; si
+  otra está activa, la llamada retorna 0 sin duplicar trabajo. `SKIP LOCKED`
+  evita esperar por filas bloqueadas por `check_rate_limit` u otra limpieza.
+- Índice nuevo `idx_ip_rate_events_accepted_at_id (accepted_at, id)` para el
+  barrido global; se conserva `idx_ip_rate_events (ip_address, accepted_at DESC)`.
+- No se modifica `check_rate_limit`: límites, ventanas, respuesta JSON y limpieza
+  acotada por IP permanecen intactos.
+- RLS activo sin políticas; `EXECUTE` revocado a `PUBLIC`, `anon` y
+  `authenticated`, y concedido a `service_role`; `SET search_path = public, pg_temp`.
+- Pruebas: eliminación de más de 25 h; conservación de 23 h y 24 h; idempotencia;
+  2500 eventos procesados con lotes de 100; concurrencia con `check_rate_limit`;
+  RLS y permisos RPC.
+
 ## 11. Bloqueantes de producción (Fase 4)
 
-- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A/T-004-8.1/T-004-8.2/T-004-8.2b.**
+- **BLOQUEANTE — aprobación de producción de T-004-6/T-004-7/T-004-7A/T-004-8.1/T-004-8.2/T-004-8.2b/T-004-8.3.**
   La integración en `/api/generate`, la protección persistente de resultado
-  incierto, el rate limit de ventana móvil y las correcciones de expiración de
-  cuota, de reconciliación de presupuesto y de timestamps de transición están
-  implementadas y validadas localmente (379/379, 10/10 corridas completas), pero
-  no aprobadas para producción. `AI_ENABLED=false` y `realCallsAuthorized=false`
-  se mantienen.
-- **BLOQUEANTE — limpieza automática ausente.** Sin un job periódico, los
-  eventos de `ip_rate_limit_events` de IPs que dejan de volver no se eliminan
-  (la RPC solo limpia la IP que consulta) y tampoco se consolidan las reservas
-  de cuota ni de presupuesto. Afecta crecimiento de tabla y liberación tardía
-  de cuota.
+  incierto, el rate limit de ventana móvil, las correcciones de expiración de
+  cuota, de reconciliación de presupuesto y de timestamps de transición, y la
+  limpieza global de eventos de rate limit están implementadas y validadas
+  localmente (390/390, 10/10 corridas completas), pero no aprobadas para
+  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
+- **BLOQUEANTE — programación automática ausente.** La limpieza global ya existe
+  como RPC `cleanup_rate_limit_events` (022), pero sin un job periódico no se
+  ejecuta; tampoco se consolidan las reservas de cuota ni de presupuesto. Afecta
+  crecimiento de tabla y liberación tardía de cuota.
+- **PENDIENTE — mecanismo automático de reconciliación de reservas.** No
+  existe un job que invoque periódicamente `expire_pending_reservations()` y
+  `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre
+  de forma reactiva; las reservas `pending` vencidas y las reservas de
+  presupuesto antiguas permanecen sin consolidar hasta que se programe el job.
+- **RESUELTO en T-004-8.3 — limpieza global de eventos de rate limit.**
+  La migración `022_cleanup_rate_limit_events.sql` agrega
+  `cleanup_rate_limit_events` con retención mínima de 25 h, borrado por lotes,
+  advisory lock, índice de barrido global y permisos de `service_role`. Queda
+  pendiente su programación periódica (T-004-8.8).
 - **PENDIENTE — mecanismo automático de reconciliación de reservas.** No
   existe un job que invoque periódicamente `expire_pending_reservations()` y
   `reconcile_pending_budget_reservations()`. Hoy la reconciliación solo ocurre

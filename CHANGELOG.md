@@ -489,7 +489,7 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Aislamiento: los fixtures que invocan la funcion global expire_pending_reservations borran generation_records y quota_reservations antes de sembrar, y las pruebas de sent_uncertain ejecutan siembra, expiracion y lectura en una sola transaccion.
 - Hallazgo: las RPC de cuota (011/015/017) escriben completed_at con NOW(), que es el inicio de la transaccion; una transaccion larga que actualiza filas creadas por otras transiciones puede escribir un completed_at anterior al created_at y violar chk_completed_after_created. Reproducido en PostgreSQL 17. El proceso programado de T-004-8 ejecuta sus tareas en una sola transaccion, por lo que es un riesgo real; la correccion propuesta (usar clock_timestamp) NO se aplica sin autorizacion.
 - Total: 365/365. Lint, typecheck y build exitosos.
-- Pendiente: T-004-8.3 en adelante sigue sin autorizar.
+- Pendiente: T-004-8.4 en adelante sigue sin autorizar.
 - Estado: implementado y committeado localmente, no aprobado para produccion. AI_ENABLED=false y realCallsAuthorized=false.
 
 ## 2026-10-20 — T-004-8.2b: correccion de timestamps de transicion de cuota
@@ -505,3 +505,19 @@ Registro de cambios importantes del proyecto. El estado operativo actual vive en
 - Total: 379/379. Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
 - Sin cambios en src/lib/** ni en contratos publicos. AI_ENABLED=false y realCallsAuthorized=false.
 - Estado: implementado y committeado localmente, no aprobado para produccion. Sin push. AI_ENABLED=false y realCallsAuthorized=false.
+
+## 2026-10-20 — T-004-8.3: limpieza global de eventos de rate limit
+
+- supabase/migrations/022_cleanup_rate_limit_events.sql (nueva; 001-021 intactas): funcion public.cleanup_rate_limit_events(p_retention INTERVAL DEFAULT INTERVAL '25 hours', p_batch_size INTEGER DEFAULT 1000) RETURNS INTEGER.
+- Causa raiz: check_rate_limit solo elimina los eventos vencidos de la IP que vuelve a solicitar; las IPs que no regresan dejaban crecer ip_rate_limit_events sin limite.
+- Retencion minima de 25 horas: la ventana maxima es 24 horas y se conserva 1 hora de margen para desfases de reloj. Una retencion menor lanza excepcion para no borrar eventos que check_rate_limit aun necesita.
+- Borrado por lotes: cada DELETE procesa hasta p_batch_size filas con FOR UPDATE SKIP LOCKED; el bucle continua hasta que no quedan elegibles y retorna el total eliminado. La funcion se ejecuta en una sola transaccion RPC; el lote acota trabajo y bloqueos por sentencia, no el total de la transaccion. Un borrado multi-transaccion requeriria un procedimiento con COMMIT o el scheduler de T-004-8.8, fuera de alcance.
+- Concurrencia: pg_try_advisory_xact_lock serializa las limpiezas globales; si otra esta activa, la llamada retorna 0 sin duplicar trabajo. SKIP LOCKED evita esperar por filas bloqueadas por check_rate_limit u otra limpieza.
+- Indice nuevo idx_ip_rate_events_accepted_at_id (accepted_at, id) para el barrido global; se conserva idx_ip_rate_events (ip_address, accepted_at DESC).
+- No se modifico check_rate_limit: limites, ventanas, respuesta JSON y limpieza por IP permanecen intactos.
+- RLS activo sin politicas; EXECUTE revocado a PUBLIC, anon y authenticated, concedido a service_role; SET search_path = public, pg_temp.
+- Pruebas nuevas: 5 de integracion (retencion de 25/24/23 horas, idempotencia, 2500 eventos con lotes de 100, concurrencia con check_rate_limit, RLS y permisos) y 6 estaticas de la migracion 022. Total: 390/390.
+- Robustez de pruebas: se ampliaron los margenes de expiracion de los fixtures de reconciliation.test.ts (de 1-2 minutos a 5-10 minutos) para tolerar regresiones del reloj del contenedor. No cambia la logica de produccion.
+- Lint, typecheck y build exitosos. 10/10 corridas completas de pnpm test en verde.
+- Sin cambios en src/lib/** ni en contratos publicos. AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado localmente, no aprobado para produccion; sin commit ni push. La programacion periodica sigue pendiente (T-004-8.8).

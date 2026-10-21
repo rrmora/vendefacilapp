@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 21 archivos SQL', () => {
+    it('contiene 22 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(21);
+      expect(files).toHaveLength(22);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -38,6 +38,7 @@ describe('schema migrations', () => {
       expect(files[18]).toMatch(/^019_/);
       expect(files[19]).toMatch(/^020_/);
       expect(files[20]).toMatch(/^021_/);
+      expect(files[21]).toMatch(/^022_/);
     });
   });
 
@@ -362,6 +363,52 @@ describe('schema migrations', () => {
       expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.release_quota(UUID) TO service_role');
       expect(sql).toContain(
         'GRANT EXECUTE ON FUNCTION public.expire_pending_reservations() TO service_role'
+      );
+    });
+  });
+
+  describe('migracion 022 limpieza global de rate limit', () => {
+    const sql = readMigration('022_cleanup_rate_limit_events.sql');
+
+    it('define la funcion con retencion y lote por defecto', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.cleanup_rate_limit_events(');
+      expect(sql).toContain("p_retention INTERVAL DEFAULT INTERVAL '25 hours'");
+      expect(sql).toContain('p_batch_size INTEGER DEFAULT 1000');
+      expect(sql).toContain(') RETURNS INTEGER AS $$');
+      expect(sql).toContain('RETURN v_total;');
+    });
+
+    it('impone retencion minima de 25 horas y un lote valido', () => {
+      expect(sql).toContain("p_retention < INTERVAL '25 hours'");
+      expect(sql).toContain('p_batch_size < 1');
+    });
+
+    it('elimina por lotes con SKIP LOCKED y sin dejar eventos elegibles', () => {
+      expect(sql).toContain('LIMIT p_batch_size');
+      expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+      expect(sql).toContain('GET DIAGNOSTICS v_deleted = ROW_COUNT;');
+      expect(sql).toContain('EXIT WHEN v_deleted = 0;');
+      expect(sql).toContain('v_cutoff := clock_timestamp() - p_retention;');
+    });
+
+    it('serializa limpiezas concurrentes', () => {
+      expect(sql).toContain('pg_catalog.pg_try_advisory_xact_lock');
+      expect(sql).toContain("pg_catalog.hashtextextended('public.cleanup_rate_limit_events', 0)");
+    });
+
+    it('crea el indice de barrido global y no redefine check_rate_limit', () => {
+      expect(sql).toContain('idx_ip_rate_events_accepted_at_id');
+      expect(sql).toContain('ON public.ip_rate_limit_events (accepted_at, id)');
+      expect(sql).not.toContain('FUNCTION public.check_rate_limit');
+    });
+
+    it('fija search_path y restringe EXECUTE a service_role', () => {
+      expect(sql).toContain('SET search_path = public, pg_temp');
+      expect(sql).toContain(
+        'REVOKE EXECUTE ON FUNCTION public.cleanup_rate_limit_events(INTERVAL, INTEGER) FROM PUBLIC'
+      );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.cleanup_rate_limit_events(INTERVAL, INTEGER) TO service_role'
       );
     });
   });

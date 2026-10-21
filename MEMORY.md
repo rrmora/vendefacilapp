@@ -4,23 +4,24 @@
 
 Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
-T-004-7, T-004-7A, T-004-8.1, T-004-8.2 y T-004-8.2b implementadas localmente
-(379/379, 10/10 corridas completas de `pnpm test` en verde); T-004-8 pendiente y
-sin iniciar.
+T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3 implementadas
+localmente (390/390, 10/10 corridas completas de `pnpm test` en verde);
+T-004-8.4 en adelante pendiente y sin iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-8.2b - Corrección de timestamps de transición de cuota (implementada
-localmente, no aprobada para producción).
+T-004-8.3 - Limpieza global de eventos de rate limit (implementada localmente,
+no aprobada para producción).
 
 ## Última tarea completada
 
-T-004-8.2b - Corrección de timestamps de transición de cuota: `completed_at`
-con `clock_timestamp()` acotado por `created_at` y expiración con reloj real de
-ejecución (implementada localmente, no aprobada para producción, 2026-10-20).
+T-004-8.3 - Limpieza global de eventos de rate limit: RPC con retención mínima
+de 25 horas, borrado por lotes, concurrencia segura y permisos de
+`service_role` (implementada localmente, no aprobada para producción,
+2026-10-20).
 
 ## Fase 3 — Cierre
 
@@ -360,8 +361,8 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   las RPC de cuota se aplico en T-004-8.2b (migracion 021).
 
 **Pendiente (T-004-8, continuacion)**
-- T-004-8.3 en adelante (limpieza global, tabla de auditoria, `run_maintenance`,
-  endpoint) sin autorizar; T-004-8.8 bloqueada por la decision de despliegue.
+- T-004-8.4 en adelante (tabla de auditoria, `run_maintenance`, endpoint) sin
+  autorizar; T-004-8.8 bloqueada por la decision de despliegue.
 
 ## T-004-8.2b - Correccion de timestamps de transicion de cuota (local, no aprobado)
 
@@ -401,6 +402,46 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   `pnpm test` en verde.
 - Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
   realCallsAuthorized=false.
+
+## T-004-8.3 - Limpieza global de eventos de rate limit (local, no aprobado)
+
+- `supabase/migrations/022_cleanup_rate_limit_events.sql` (nueva; 001-021
+  intactas): `public.cleanup_rate_limit_events(p_retention INTERVAL DEFAULT
+  INTERVAL '25 hours', p_batch_size INTEGER DEFAULT 1000) RETURNS INTEGER`.
+- Causa raiz: `check_rate_limit` solo elimina los eventos vencidos de la IP que
+  vuelve a solicitar. Las IPs que no regresan dejaban crecer
+  `ip_rate_limit_events` sin limite.
+- Retencion minima de 25 horas: la ventana maxima es 24 horas y se conserva 1
+  hora de margen para desfases de reloj. Una retencion menor lanza excepcion,
+  de modo que ninguna llamada borra eventos que `check_rate_limit` aun necesita.
+- Borrado por lotes: cada `DELETE` procesa hasta `p_batch_size` filas con
+  `FOR UPDATE SKIP LOCKED`; el bucle continua hasta que no quedan elegibles y
+  retorna el total eliminado. La funcion se ejecuta en una sola transaccion RPC;
+  el lote acota trabajo y bloqueos por sentencia, no el total de la transaccion.
+  Un borrado multi-transaccion requeriria un procedimiento con `COMMIT` o el
+  scheduler de T-004-8.8, fuera de alcance.
+- Concurrencia: `pg_catalog.pg_try_advisory_xact_lock` serializa las limpiezas
+  globales; si otra esta activa, la llamada retorna 0 sin duplicar trabajo.
+  `SKIP LOCKED` evita esperar por filas bloqueadas por `check_rate_limit` u otra
+  limpieza.
+- Indice nuevo `idx_ip_rate_events_accepted_at_id (accepted_at, id)` para el
+  barrido global; se conserva `idx_ip_rate_events (ip_address, accepted_at DESC)`.
+- No se modifico `check_rate_limit`: limites, ventanas, respuesta JSON y limpieza
+  por IP permanecen intactos.
+- RLS activo sin politicas; `EXECUTE` revocado a `PUBLIC`, `anon` y
+  `authenticated`, concedido a `service_role`; `SET search_path = public, pg_temp`.
+- Pruebas nuevas: 5 de integracion (retencion de 25/24/23 horas, idempotencia,
+  2500 eventos con lotes de 100, concurrencia con `check_rate_limit`, RLS y
+  permisos) y 6 estaticas de la migracion 022.
+- Robustez de pruebas: se ampliaron los margenes de expiracion de los fixtures
+  de `reconciliation.test.ts` (de 1-2 minutos a 5-10 minutos) para tolerar
+  regresiones del reloj del contenedor observadas durante la validacion. No
+  cambia la logica de produccion.
+- Total: 390/390. Lint, typecheck y build exitosos. 10/10 corridas completas de
+  `pnpm test` en verde.
+- Sin cambios en `src/lib/**` ni en contratos publicos. AI_ENABLED=false y
+  realCallsAuthorized=false.
+- Sin commit ni push; pendiente de autorizacion.
 
 ## Decisiones arquitectonicas
 
@@ -442,20 +483,22 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 ## Bloqueos
 
 **Bloqueantes de producción (Fase 4):**
-1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2 y T-004-8.2b implementadas y
-   validadas localmente (379/379), pero sin aprobación para producción.
-   `AI_ENABLED=false` y `realCallsAuthorized=false`.
-2. Limpieza automática ausente: sin job periódico, los eventos de
-   `ip_rate_limit_events` de IPs que no regresan no se eliminan y las reservas de
-   cuota y presupuesto no se consolidan.
+1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3
+   implementadas y validadas localmente (390/390), pero sin aprobación para
+   producción. `AI_ENABLED=false` y `realCallsAuthorized=false`.
+2. Programación automática ausente: sin job periódico, la RPC
+   `cleanup_rate_limit_events` (022) no se ejecuta sola y las reservas de cuota
+   y presupuesto no se consolidan.
 
 **Pendientes:**
 1. Mecanismo automático de reconciliación de reservas y de limpieza de eventos.
 2. Verificación del modelo predeterminado de Groq.
-3. Commit local conjunto de T-004-8.2 y T-004-8.2b creado (sin push).
+3. Programación de `cleanup_rate_limit_events` y de las RPC de reconciliación
+   (T-004-8.8).
+4. Commit de T-004-8.3 (espera autorización explícita).
 
 ## Siguiente tarea propuesta
 
-T-004-8 - Documentacion y validacion final (MEMORY/CHANGELOG, lint/typecheck/test/build).
-Requiere aprobacion expresa del usuario. No iniciar sin autorizacion.
+T-004-8.4 - Tabla de auditoría del mantenimiento (propuesta; requiere
+autorización). No iniciar sin autorización.
 
