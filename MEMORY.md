@@ -6,24 +6,28 @@ Fase 4 — Cuotas, presupuesto y protección contra abuso (T-004).
 T-004-1, T-004-2, T-004-3A, T-004-3, T-004-4, T-004-5 y T-004-6 completadas.
 T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b, T-004-8.3 y T-004-8.4
 implementadas localmente. T-004-8.3 tiene commits locales 844784d (390/390) y
-1708ede (auditoria, 391/391). T-004-8.4 (tabla de auditoria) esta implementada
-sin commit (412/412); sin push y con aprobacion de commit pendiente. T-004-8.5
-en adelante pendiente y sin iniciar.
+1708ede (auditoria, 391/391). T-004-8.4 (tabla de auditoria) esta committeada en
+e79dc86 (412/412). T-004-8.5 (run_maintenance y limpieza con estado) y su
+correccion de privilegios T-004-8.5b (migracion 026, Plan A) estan implementadas y
+validadas localmente sin commit; sin push. T-004-8.6 en adelante pendiente y sin
+iniciar.
 Stack: Next.js 16.4.0, React 19.3.0, TypeScript 5.9.3 (strict),
 Tailwind CSS 4.3.3, Zod 4.6.5, Vitest 5.0.3, @testing-library/react
 16.3.3, happy-dom 20.14.5, pnpm 12.4.2, Node.js 24.21.0.
 
 ## Fase activa
 
-T-004-8.4 - Tabla de auditoría del mantenimiento (cambios locales sin commit;
-sin push; aprobación de commit pendiente).
+T-004-8.5 / T-004-8.5b - `run_maintenance`, limpieza con estado y privilegios
+mínimos (cambios locales sin commit; sin push; aprobación de commit pendiente).
 
 ## Última tarea completada
 
-T-004-8.4 - Tabla de auditoría del mantenimiento: migración 023 con estados,
-contadores, duración derivada, RLS y permisos mínimos para `service_role`;
-pruebas de integración en PostgreSQL 17 y pruebas estáticas (412/412, sin
-commit, 2026-10-20).
+T-004-8.5b - Privilegios mínimos de `service_role` (migración 026, Plan A):
+grants mínimos verificados (sin `GRANT ALL`), revocación dirigida de
+`PUBLIC`/`anon`/`authenticated` en tablas y secuencias, `EXECUTE` de las 16 RPC
+restringido a `service_role`, sin `SECURITY DEFINER` ni RLS modificada; pruebas
+de integración con los defaults de Supabase simulados (12) y actualización de las
+pruebas de `run_maintenance`/esquema (2026-10-21, sin commit).
 
 ## Fase 3 — Cierre
 
@@ -363,9 +367,10 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   las RPC de cuota se aplico en T-004-8.2b (migracion 021).
 
 **Pendiente (T-004-8, continuacion)**
-- T-004-8.4 quedo implementada localmente sin commit. T-004-8.5 en adelante
-  (`run_maintenance`, endpoint) siguen sin autorizar; T-004-8.8 esta bloqueada
-  por la decision de despliegue.
+- T-004-8.4 quedo committeada en e79dc86. T-004-8.5 (run_maintenance y limpieza
+  con estado) esta implementada localmente sin commit. T-004-8.6-8.7 (endpoint y
+  documentacion) siguen sin autorizar; T-004-8.8 esta bloqueada por la decision de
+  despliegue.
 
 ## T-004-8.2b - Correccion de timestamps de transicion de cuota (local, no aprobado)
 
@@ -452,7 +457,7 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 - Estado: commits locales 844784d y 1708ede; sin push; aprobacion de produccion
   pendiente.
 
-## T-004-8.4 - Tabla de auditoria del mantenimiento (local, sin commit; no aprobado)
+## T-004-8.4 - Tabla de auditoria del mantenimiento (commit e79dc86; no aprobado para produccion)
 
 - `supabase/migrations/023_maintenance_runs.sql` (nueva; 001-022 intactas):
   `public.maintenance_runs` para registrar cada ejecucion futura de
@@ -484,7 +489,117 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
   Total: 412/412.
 - Sin cambios en `src/**`, contratos publicos ni migraciones historicas.
   AI_ENABLED=false y realCallsAuthorized=false.
-- Estado: implementado localmente, sin commit y sin push; aprobacion pendiente.
+- Estado: commit local e79dc86; sin push; aprobacion de produccion pendiente. La
+  migracion 023 no implementaba `run_maintenance`; eso corresponde a T-004-8.5.
+
+## T-004-8.5 - run_maintenance y limpieza con estado (local, sin commit; no aprobado)
+
+- `supabase/migrations/024_cleanup_rate_limit_events_status.sql` (nueva; 001-023
+  intactas): extrae la logica compartida a
+  `public.cleanup_rate_limit_events_core(INTERVAL, INTEGER) RETURNS JSONB`,
+  agrega `public.cleanup_rate_limit_events_status(...) RETURNS JSONB` y conserva
+  `public.cleanup_rate_limit_events(...) RETURNS INTEGER` con firma, validaciones
+  y semantica originales. La version 022 retornaba `INTEGER 0` tanto sin filas
+  elegibles como con el advisory lock ocupado; el nucleo distingue ambos casos
+  con `{"status":"completed","deleted":N}` y
+  `{"status":"already_running","deleted":0}`.
+- `supabase/migrations/025_run_maintenance.sql` (nueva): `public.run_maintenance()
+  RETURNS JSONB`, sin parametros, `SECURITY INVOKER`, `SET search_path = public,
+  pg_temp`. Ejecuta en orden `expire_pending_reservations()`,
+  `reconcile_pending_budget_reservations()` y
+  `cleanup_rate_limit_events_status()`.
+- Concurrencia: `pg_try_advisory_xact_lock(hashtextextended('public.run_maintenance',
+  0))`. Si el lock global esta ocupado retorna exactamente
+  `{"run_id":null,"status":"already_running"}` sin insertar auditoria.
+- Transaccional: sin commits parciales ni `PROCEDURE`. Inserta una fila `running`
+  en `maintenance_runs`, ejecuta cada tarea en un bloque `EXCEPTION`
+  independiente (la subtransaccion fallida se revierte y las demas continuan) y
+  actualiza la fila al final. Si la transaccion completa se revierte, la
+  auditoria tambien se revierte.
+- Limpieza omitida: si el estado es `already_running`, la tarea cuenta como
+  fallida/omitida, `deleted_rate_limit_events` queda en 0 y `error_details`
+  registra `status = already_running`.
+- Estados: `success` con 0 tareas fallidas, `partial` con 1 o 2, `failed` con 3.
+  `finished_at = GREATEST(clock_timestamp(), started_at)`; `duration_ms` se
+  deriva de la columna generada.
+- Errores: `GET STACKED DIAGNOSTICS` captura `RETURNED_SQLSTATE` y
+  `MESSAGE_TEXT` por tarea. `WHEN OTHERS` no captura `QUERY_CANCELED` ni
+  `ASSERT_FAILURE`: una cancelacion o timeout aborta la transaccion completa y no
+  deja auditoria. No se guardan secretos ni datos personales.
+- Hallazgo de privilegios: en un PostgreSQL limpio con 001-025, `service_role`
+  tiene `EXECUTE` en las tres tareas, pero no tiene privilegios de tabla sobre
+  `visitor_daily_quota`, `quota_reservations`, `generation_records` ni
+  `budget_tracking`. Con `SECURITY INVOKER`, `run_maintenance` ejecutado como
+  `service_role` registra `partial` (`expire` y `reconcile` fallan con SQLSTATE
+  42501; `cleanup` se completa). Se mantiene `SECURITY INVOKER` sin elevar
+  privilegios; se documenta que el ejecutor necesita los grants de las tareas y
+  de `maintenance_runs`.
+- Pruebas nuevas: 10 de integracion en PostgreSQL 17 (success con contadores y
+  actualizacion real de cuota, idempotencia, `GREATEST`/`duration_ms`,
+  `already_running` global sin auditoria, `partial` por limpieza concurrente,
+  `failed` con SQLSTATE en las tres tareas, `partial` por falta de grants de
+  `service_role`, `cleanup_rate_limit_events_status` completed vs
+  already_running, contrato INTEGER y validaciones, permisos RPC) y 12 estaticas
+  de las migraciones 024/025. Total: 434/434. Lint, typecheck y build exitosos.
+- Sin cambios en `src/**`, contratos publicos, endpoints ni migraciones
+  historicas 001-023. AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado y validado localmente, sin commit y sin push; aprobacion
+  de commit pendiente.
+
+## T-004-8.5b - Privilegios minimos de service_role (migracion 026, Plan A; local, sin commit)
+
+- `supabase/migrations/026_minimum_privileges.sql` (nueva; 001-025 intactas):
+  resuelve el hallazgo de privilegios de T-004-8.5 sin elevar privilegios. No
+  redefine funciones, no crea roles, no usa `SECURITY DEFINER`, no modifica RLS.
+- Auditoria de partida: en PostgreSQL 17 limpio (001-025), `service_role` carecia
+  de privilegios de tabla en `visitor_daily_quota`, `quota_reservations`,
+  `generation_records` y `budget_tracking`. Ademas, con los defaults de Supabase,
+  `anon` y `authenticated` reciben `ALL` sobre esas tablas y secuencias, y
+  `reserve_quota`/`get_quota_status` quedaban ejecutables por clientes porque
+  007/010 solo revocaban `PUBLIC`.
+- Decision (Plan A): conceder a `service_role` los privilegios minimos verificados
+  (no `GRANT ALL`) y revocar `PUBLIC`, `anon` y `authenticated` de forma dirigida
+  sobre las tablas y secuencias afectadas, mas restringir `EXECUTE` de las 16 RPC
+  a `service_role`.
+- Grants a `service_role`: `visitor_daily_quota`, `quota_reservations` y
+  `budget_tracking` con `SELECT, INSERT, UPDATE`; `generation_records` con
+  `SELECT, INSERT`; `USAGE` en `visitor_daily_quota_id_seq`,
+  `quota_reservations_id_seq`, `generation_records_id_seq`,
+  `budget_tracking_id_seq`, `budget_reservations_id_seq` e
+  `ip_rate_limit_events_id_seq`.
+- RPC con `EXECUTE` restringido a `service_role`: `reserve_quota`,
+  `confirm_quota`, `release_quota`, `get_quota_status`, `mark_quota_sent`,
+  `expire_pending_reservations`, `reserve_budget`, `confirm_budget`,
+  `release_budget`, `get_budget_status`, `check_rate_limit`,
+  `reconcile_pending_budget_reservations`, `cleanup_rate_limit_events`,
+  `cleanup_rate_limit_events_core`, `cleanup_rate_limit_events_status` y
+  `run_maintenance`.
+- Normalizacion de `service_role`: revoca
+  `DELETE, TRUNCATE, REFERENCES, TRIGGER` en las cuatro tablas,
+  `UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER` en `generation_records`,
+  `DELETE, TRUNCATE, REFERENCES, TRIGGER` en `budget_reservations`,
+  `TRUNCATE, REFERENCES, TRIGGER` en `ip_rate_limit_events` y `SELECT, UPDATE`
+  en las seis secuencias.
+- Hallazgo corregido durante la validacion: revocar `UPDATE` en
+  `ip_rate_limit_events` rompe `cleanup_rate_limit_events`, que usa
+  `FOR UPDATE SKIP LOCKED`; la migracion conserva `UPDATE` en esa tabla.
+- Pruebas nuevas: 12 de integracion en `tests/integration/privileges.test.ts`
+  sobre PostgreSQL 17 con los defaults de Supabase simulados (rol sonda
+  `vf_public_probe` para medir privilegios efectivos heredados de `PUBLIC`).
+  Cubren over-grant antes de 026, correccion tras 026, ausencia de privilegios de
+  tabla y secuencia para `anon`/`authenticated`/`PUBLIC`, privilegios minimos de
+  `service_role`, `EXECUTE` restringido de las 16 RPC, RLS activa sin politicas,
+  flujos legitimos del backend, `run_maintenance` en `success`, y denegacion a
+  `anon`/`authenticated` de `run_maintenance`, `reserve_quota`, `INSERT` y
+  `TRUNCATE`.
+- Pruebas actualizadas: `tests/integration/run-maintenance.test.ts` espera
+  `success` (antes `partial`) al ejecutar `service_role` con los grants de 026;
+  `tests/integration/schema.test.ts` pasa a 26 migraciones y agrega el bloque
+  estatico de la 026.
+- Sin cambios en `src/**`, contratos publicos ni migraciones historicas 001-025.
+  AI_ENABLED=false y realCallsAuthorized=false.
+- Estado: implementado y validado localmente, sin commit y sin push; aprobacion
+  de commit pendiente.
 
 ## Decisiones arquitectonicas
 
@@ -532,22 +647,41 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
    `realCallsAuthorized=false`.
 2. Programación automática ausente: sin job periódico, la RPC
    `cleanup_rate_limit_events` (022) no se ejecuta sola y las reservas de cuota
-   y presupuesto no se consolidan. La tabla `maintenance_runs` (023) ya existe,
-   pero todavía no hay `run_maintenance` que escriba en ella.
-3. T-004-8.4 implementada localmente sin commit (412/412); requiere revisión y
+   y presupuesto no se consolidan. `run_maintenance` (025) ya existe y escribe
+   `maintenance_runs` (023), pero todavía no hay scheduler que lo invoque.
+3. T-004-8.4 committeada en e79dc86 (412/412); requiere aprobación de producción.
+4. T-004-8.5 implementada y validada localmente sin commit; requiere revisión y
    autorización para commit.
+5. T-004-8.5b (migración 026, Plan A) implementada y validada localmente sin
+   commit; requiere revisión y autorización para commit. Resuelve el hallazgo de
+   privilegios de `service_role` (`run_maintenance` como `service_role` ya
+   registra `success` con los grants de 026) y restringe `PUBLIC`/`anon`/
+   `authenticated` sin elevar privilegios.
 
 **Pendientes:**
 1. Mecanismo automático de reconciliación de reservas y de limpieza de eventos.
 2. Verificación del modelo predeterminado de Groq.
-3. Programación de `cleanup_rate_limit_events` y de las RPC de reconciliación
-   (T-004-8.8).
-4. Aprobación de producción de T-004-8.3 (commits locales 844784d y 1708ede;
-   push pendiente).
-5. Autorización de commit para T-004-8.4.
+3. Programación de `run_maintenance`, de `cleanup_rate_limit_events` y de las RPC
+   de reconciliación (T-004-8.8).
+4. Aprobación de producción de T-004-8.3 (commits locales 844784d y 1708ede) y
+   T-004-8.4 (e79dc86); push pendiente.
+5. Commit local de T-004-8.5 y T-004-8.5b preparado en T-004-8.6; push y
+   aprobación de producción pendientes.
+6. Deuda técnica de privilegios detectada en la auditoría T-004-8.6 (no corregida;
+   fuera del alcance de 026):
+   - B-01: `anon`/`authenticated` conservan USAGE/SELECT/UPDATE sobre
+     `budget_reservations_id_seq` e `ip_rate_limit_events_id_seq` en entornos con
+     los defaults de Supabase.
+   - B-02: `service_role` conserva ALL sobre `maintenance_runs` y SELECT/UPDATE
+     sobre su secuencia en entornos con los defaults de Supabase, pese a lo
+     documentado en 023.
+   - B-03: la tabla legacy `ip_rate_limits` (005) y su secuencia conservan ALL
+     para `anon`/`authenticated`/`service_role` en entornos con los defaults de
+     Supabase; RLS no bloquea TRUNCATE y la tabla no tiene escritores desde 018.
 
 ## Siguiente tarea propuesta
 
-T-004-8.5 - `run_maintenance` y registro en `maintenance_runs` (propuesta;
-requiere autorización). No iniciar sin autorización.
+T-004-8.6 - Endpoint de mantenimiento y documentación (propuesta; requiere
+autorización). No iniciar sin autorización. La programación real (T-004-8.8)
+sigue bloqueada por la decisión de despliegue.
 

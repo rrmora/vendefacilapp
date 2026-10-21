@@ -17,9 +17,9 @@ function readAllMigrations(): string {
 
 describe('schema migrations', () => {
   describe('archivos de migracion', () => {
-    it('contiene 23 archivos SQL', () => {
+    it('contiene 26 archivos SQL', () => {
       const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql'));
-      expect(files).toHaveLength(23);
+      expect(files).toHaveLength(26);
     });
 
     it('nombres de migracion ordenados correctamente', () => {
@@ -40,6 +40,9 @@ describe('schema migrations', () => {
       expect(files[20]).toMatch(/^021_/);
       expect(files[21]).toMatch(/^022_/);
       expect(files[22]).toMatch(/^023_/);
+      expect(files[23]).toMatch(/^024_/);
+      expect(files[24]).toMatch(/^025_/);
+      expect(files[25]).toMatch(/^026_/);
     });
   });
 
@@ -483,6 +486,229 @@ describe('schema migrations', () => {
       expect(sql).not.toContain('DROP TABLE');
       expect(sql).not.toContain('ALTER TABLE public.quota_reservations');
       expect(sql).not.toContain('ALTER TABLE public.ip_rate_limit_events');
+    });
+  });
+
+  describe('migracion 024 limpieza global con estado', () => {
+    const sql = readMigration('024_cleanup_rate_limit_events_status.sql');
+
+    it('extrae el nucleo compartido con retorno JSONB', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.cleanup_rate_limit_events_core(');
+      expect(sql).toContain(') RETURNS JSONB AS $$');
+      expect(sql).toContain("jsonb_build_object('status', 'completed', 'deleted', v_total)");
+      expect(sql).toContain("jsonb_build_object('status', 'already_running', 'deleted', 0)");
+    });
+
+    it('adquiere el advisory lock una sola vez y conserva el borrado por lotes', () => {
+      expect(sql.match(/pg_catalog\.pg_try_advisory_xact_lock/g)).toHaveLength(1);
+      expect(sql).toContain("pg_catalog.hashtextextended('public.cleanup_rate_limit_events', 0)");
+      expect(sql).toContain('LIMIT p_batch_size');
+      expect(sql).toContain('FOR UPDATE SKIP LOCKED');
+      expect(sql).toContain('EXIT WHEN v_deleted = 0;');
+    });
+
+    it('conserva firma, retorno INTEGER y semantica del wrapper publico', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.cleanup_rate_limit_events(');
+      expect(sql).toContain("p_retention INTERVAL DEFAULT INTERVAL '25 hours'");
+      expect(sql).toContain('p_batch_size INTEGER DEFAULT 1000');
+      expect(sql).toContain(') RETURNS INTEGER AS $$');
+      expect(sql).toContain('public.cleanup_rate_limit_events_core(p_retention, p_batch_size)');
+      expect(sql).toContain("p_retention < INTERVAL '25 hours'");
+      expect(sql).toContain('p_batch_size < 1');
+    });
+
+    it('expone la variante diagnostica con retorno JSONB', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.cleanup_rate_limit_events_status(');
+      expect(sql).toContain(') RETURNS JSONB AS $$');
+      expect(sql).toContain('RETURN public.cleanup_rate_limit_events_core(p_retention, p_batch_size);');
+    });
+
+    it('fija search_path y restringe EXECUTE a service_role en las tres funciones', () => {
+      expect(sql.match(/SET search_path = public, pg_temp/g)).toHaveLength(3);
+      expect(sql).toContain(
+        'REVOKE EXECUTE ON FUNCTION public.cleanup_rate_limit_events_core(INTERVAL, INTEGER) FROM PUBLIC'
+      );
+      expect(sql).toContain(
+        'REVOKE EXECUTE ON FUNCTION public.cleanup_rate_limit_events(INTERVAL, INTEGER) FROM PUBLIC'
+      );
+      expect(sql).toContain(
+        'REVOKE EXECUTE ON FUNCTION public.cleanup_rate_limit_events_status(INTERVAL, INTEGER) FROM PUBLIC'
+      );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.cleanup_rate_limit_events_core(INTERVAL, INTEGER) TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT EXECUTE ON FUNCTION public.cleanup_rate_limit_events_status(INTERVAL, INTEGER) TO service_role'
+      );
+    });
+  });
+
+  describe('migracion 025 orquestador run_maintenance', () => {
+    const sql = readMigration('025_run_maintenance.sql');
+
+    it('define la funcion sin parametros con retorno JSONB', () => {
+      expect(sql).toContain('CREATE OR REPLACE FUNCTION public.run_maintenance()');
+      expect(sql).toContain('RETURNS JSONB AS $$');
+      expect(sql).toContain('SECURITY INVOKER');
+      expect(sql).toContain('SET search_path = public, pg_temp');
+    });
+
+    it('serializa ejecuciones con un advisory lock global', () => {
+      expect(sql).toContain('pg_catalog.pg_try_advisory_xact_lock');
+      expect(sql).toContain("pg_catalog.hashtextextended('public.run_maintenance', 0)");
+      expect(sql).toContain("jsonb_build_object('run_id', NULL, 'status', 'already_running')");
+    });
+
+    it('inserta la auditoria running antes de ejecutar las tareas en orden', () => {
+      expect(sql).toContain('INSERT INTO public.maintenance_runs (started_at)');
+      expect(sql.indexOf('public.expire_pending_reservations()')).toBeLessThan(
+        sql.indexOf('public.reconcile_pending_budget_reservations()')
+      );
+      expect(sql.indexOf('public.reconcile_pending_budget_reservations()')).toBeLessThan(
+        sql.indexOf('public.cleanup_rate_limit_events_status()')
+      );
+    });
+
+    it('aísla cada tarea con su propio bloque de excepcion', () => {
+      expect(sql.match(/EXCEPTION WHEN OTHERS THEN/g)).toHaveLength(3);
+      expect(sql.match(/GET STACKED DIAGNOSTICS/g)).toHaveLength(3);
+      expect(sql).not.toContain('WHEN query_canceled');
+      expect(sql).not.toContain('WHEN QUERY_CANCELED');
+      expect(sql).not.toContain('WHEN assert_failure');
+    });
+
+    it('trata la limpieza omitida como tarea fallida sin contador', () => {
+      expect(sql).toContain("v_cleanup_status := COALESCE(v_cleanup_result ->> 'status', 'unknown')");
+      expect(sql).toContain("IF v_cleanup_status = 'completed' THEN");
+      expect(sql).toContain("'message', 'cleanup_rate_limit_events omitida por concurrencia'");
+    });
+
+    it('deriva el estado terminal de las tareas fallidas', () => {
+      expect(sql).toContain("WHEN v_failed_tasks = 0 THEN 'success'");
+      expect(sql).toContain("WHEN v_failed_tasks >= 3 THEN 'failed'");
+      expect(sql).toContain("ELSE 'partial'");
+      expect(sql).toContain('finished_at = GREATEST(clock_timestamp(), v_started)');
+      expect(sql).toContain("'expired_quota_reservations', v_expired");
+      expect(sql).toContain("'reconciled_budget_reservations', v_reconciled");
+      expect(sql).toContain("'deleted_rate_limit_events', v_deleted");
+      expect(sql).toContain("'error_details', v_errors");
+    });
+
+    it('restringe EXECUTE a service_role', () => {
+      expect(sql).toContain('REVOKE EXECUTE ON FUNCTION public.run_maintenance() FROM PUBLIC');
+      expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.run_maintenance() FROM anon");
+      expect(sql).toContain("REVOKE EXECUTE ON FUNCTION public.run_maintenance() FROM authenticated");
+      expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.run_maintenance() TO service_role');
+    });
+  });
+
+  describe('migracion 026 privilegios minimos de service_role', () => {
+    const sql = readMigration('026_minimum_privileges.sql');
+
+    it('concede a service_role solo privilegios de tabla verificados', () => {
+      expect(sql).toContain(
+        'GRANT SELECT, INSERT, UPDATE ON TABLE public.visitor_daily_quota TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT SELECT, INSERT, UPDATE ON TABLE public.quota_reservations TO service_role'
+      );
+      expect(sql).toContain('GRANT SELECT, INSERT ON TABLE public.generation_records TO service_role');
+      expect(sql).toContain(
+        'GRANT SELECT, INSERT, UPDATE ON TABLE public.budget_tracking TO service_role'
+      );
+      expect(sql).not.toContain('GRANT ALL ON TABLE');
+      expect(sql).not.toContain('GRANT ALL ON SEQUENCE');
+      expect(sql).not.toContain('GRANT ALL ON ALL');
+    });
+
+    it('concede a service_role solo USAGE sobre las secuencias asociadas', () => {
+      expect(sql).toContain(
+        'GRANT USAGE ON SEQUENCE public.visitor_daily_quota_id_seq TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT USAGE ON SEQUENCE public.quota_reservations_id_seq TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT USAGE ON SEQUENCE public.generation_records_id_seq TO service_role'
+      );
+      expect(sql).toContain('GRANT USAGE ON SEQUENCE public.budget_tracking_id_seq TO service_role');
+      expect(sql).toContain(
+        'GRANT USAGE ON SEQUENCE public.budget_reservations_id_seq TO service_role'
+      );
+      expect(sql).toContain(
+        'GRANT USAGE ON SEQUENCE public.ip_rate_limit_events_id_seq TO service_role'
+      );
+    });
+
+    it('revoca los privilegios excesivos de anon y authenticated en las cuatro tablas', () => {
+      for (const table of [
+        'public.visitor_daily_quota',
+        'public.quota_reservations',
+        'public.generation_records',
+        'public.budget_tracking',
+      ]) {
+        expect(sql).toContain(`REVOKE ALL ON TABLE ${table} FROM anon`);
+        expect(sql).toContain(`REVOKE ALL ON TABLE ${table} FROM authenticated`);
+        expect(sql).toContain(`REVOKE ALL ON TABLE ${table} FROM PUBLIC`);
+      }
+    });
+
+    it('revoca los privilegios excesivos de anon y authenticated en las secuencias', () => {
+      for (const sequence of [
+        'public.visitor_daily_quota_id_seq',
+        'public.quota_reservations_id_seq',
+        'public.generation_records_id_seq',
+        'public.budget_tracking_id_seq',
+      ]) {
+        expect(sql).toContain(`REVOKE ALL ON SEQUENCE ${sequence} FROM anon`);
+        expect(sql).toContain(`REVOKE ALL ON SEQUENCE ${sequence} FROM authenticated`);
+        expect(sql).toContain(`REVOKE ALL ON SEQUENCE ${sequence} FROM PUBLIC`);
+      }
+    });
+
+    it('normaliza los privilegios efectivos de service_role al minimo', () => {
+      expect(sql).toContain(
+        'REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.generation_records FROM service_role'
+      );
+      expect(sql).toContain(
+        'REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.budget_reservations FROM service_role'
+      );
+      expect(sql).toContain(
+        'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.ip_rate_limit_events FROM service_role'
+      );
+      expect(sql).toContain(
+        'REVOKE SELECT, UPDATE ON SEQUENCE public.generation_records_id_seq FROM service_role'
+      );
+    });
+
+    it('restringe EXECUTE de las RPC del backend a service_role', () => {
+      const signatures = [
+        'public.reserve_quota(UUID, DATE, UUID)',
+        'public.get_quota_status(UUID, DATE)',
+        'public.reserve_budget(UUID, VARCHAR, NUMERIC, NUMERIC)',
+        'public.confirm_budget(UUID, NUMERIC, BOOLEAN)',
+        'public.release_budget(UUID)',
+        'public.get_budget_status(VARCHAR, NUMERIC)',
+        'public.run_maintenance()',
+      ];
+
+      for (const signature of signatures) {
+        expect(sql).toContain(`'${signature}'`);
+      }
+
+      expect(sql).toContain("EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', v_signature)");
+      expect(sql).toContain("EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM anon', v_signature)");
+      expect(sql).toContain(
+        "EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', v_signature)"
+      );
+    });
+
+    it('no redefine funciones, no crea roles ni desactiva RLS', () => {
+      expect(sql).not.toContain('CREATE OR REPLACE FUNCTION');
+      expect(sql).not.toContain('CREATE FUNCTION');
+      expect(sql).not.toContain('CREATE ROLE');
+      expect(sql).not.toContain('ALTER TABLE');
+      expect(sql).not.toContain('DISABLE ROW LEVEL SECURITY');
     });
   });
 

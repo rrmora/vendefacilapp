@@ -67,8 +67,10 @@ aceptación, validaciones.
     - T-004-8.2: Corrección de reconciliación de presupuesto ✅ (local, pendiente de aprobación)
     - T-004-8.2b: `completed_at` con `clock_timestamp()` en las RPC de cuota ✅ (local, pendiente de aprobación)
     - T-004-8.3: Limpieza global de eventos de rate limit ✅ (commits locales 844784d y 1708ede; push y aprobación de producción pendientes)
-    - T-004-8.4: Tabla de auditoría del mantenimiento ✅ (local, sin commit; 412/412; aprobación de commit pendiente)
-    - T-004-8.5-8.7: run_maintenance, endpoint y documentación (pendiente)
+    - T-004-8.4: Tabla de auditoría del mantenimiento ✅ (commit local e79dc86; 412/412; push y aprobación de producción pendientes)
+    - T-004-8.5: `run_maintenance` y limpieza con estado ✅ (local, sin commit; 434/434; aprobación de commit pendiente)
+    - T-004-8.5b: Privilegios mínimos de `service_role` (migración 026) ✅ (local, sin commit; aprobación de commit pendiente)
+    - T-004-8.6-8.7: endpoint y documentación (pendiente)
     - T-004-8.8: Programación real (pg_cron o Vercel Cron) — bloqueada: requiere decidir despliegue
   - Cierre de fase 4: documentación y validación final (pendiente)
 

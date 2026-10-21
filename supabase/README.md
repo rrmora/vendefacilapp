@@ -56,3 +56,8 @@ SELECT (NOW() AT TIME ZONE 'America/Mexico_City')::DATE AS quota_date;
 - Clientes anonimos NO tienen acceso directo.
 - Solo el servidor (service_role) puede operar.
 - Las migraciones son idempotentes (IF NOT EXISTS).
+- La migracion `026_minimum_privileges.sql` restringe `PUBLIC`, `anon` y
+  `authenticated` sobre las tablas y secuencias de cuota, presupuesto y
+  generaciones, y limita `EXECUTE` de las RPC a `service_role`. Evita que los
+  privilegios por defecto de Supabase dejen `reserve_quota`/`get_quota_status`
+  ejecutables por clientes.

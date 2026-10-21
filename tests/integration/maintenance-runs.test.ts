@@ -338,7 +338,12 @@ describe('maintenance runs integration', () => {
     ).toBe('f');
   });
 
-  it('no expone una funcion run_maintenance en esta migracion', () => {
-    expect(sql("SELECT to_regprocedure('public.run_maintenance()') IS NULL;")).toBe('t');
+  it('expone run_maintenance despues de la migracion 025', () => {
+    expect(sql("SELECT to_regprocedure('public.run_maintenance()') IS NOT NULL;")).toBe('t');
+    expect(
+      sql(
+        "SELECT pg_get_function_result('public.run_maintenance()'::regprocedure);"
+      )
+    ).toBe('jsonb');
   });
 });
