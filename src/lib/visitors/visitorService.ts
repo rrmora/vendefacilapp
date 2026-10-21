@@ -24,6 +24,41 @@ export function extractVisitorId(request: NextRequest): string | null {
   return isValidVisitorId(cookie.value) ? cookie.value : null;
 }
 
+export function extractVisitorIdFromCookieHeader(
+  cookieHeader: string | null | undefined
+): string | null {
+  if (!cookieHeader) {
+    return null;
+  }
+
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=');
+
+    if (separator === -1) {
+      continue;
+    }
+
+    const name = part.slice(0, separator).trim();
+
+    if (name !== VISITOR_COOKIE_NAME) {
+      continue;
+    }
+
+    const rawValue = part.slice(separator + 1).trim();
+    let value: string;
+
+    try {
+      value = decodeURIComponent(rawValue);
+    } catch {
+      return null;
+    }
+
+    return isValidVisitorId(value) ? value : null;
+  }
+
+  return null;
+}
+
 export function getOrCreateVisitorId(
   request: NextRequest,
   response: NextResponse

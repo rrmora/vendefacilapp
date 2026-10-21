@@ -48,20 +48,14 @@ export async function POST(request: Request): Promise<Response> {
     });
   }
 
-  const { generateVisitorId, isValidVisitorId } = await import(
+  const { generateVisitorId, extractVisitorIdFromCookieHeader } = await import(
     '@/lib/visitors/visitorService'
   );
   const { extractClientIp } = await import('@/lib/ratelimit/rateLimiter');
 
-  const cookieHeader = request.headers.get('cookie') ?? '';
-  const visitorMatch = cookieHeader.match(/(?:^|;\\s*)visitor_id=([^;]+)/);
-  const decodedVisitor = visitorMatch
-    ? decodeURIComponent(visitorMatch[1])
-    : null;
-  const existingVisitorId =
-    decodedVisitor && isValidVisitorId(decodedVisitor)
-      ? decodedVisitor
-      : null;
+  const existingVisitorId = extractVisitorIdFromCookieHeader(
+    request.headers.get('cookie')
+  );
   const visitorId = existingVisitorId ?? generateVisitorId();
   const shouldSetVisitorCookie = !existingVisitorId;
   const clientIp = extractClientIp(request);
