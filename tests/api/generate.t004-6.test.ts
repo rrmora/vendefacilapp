@@ -39,6 +39,9 @@ type MockMode = {
   budgetError?: boolean;
   recordError?: boolean;
   markQuotaSentError?: boolean;
+  markQuotaSentResult?: unknown;
+  confirmQuotaResult?: unknown;
+  confirmBudgetResult?: unknown;
   releaseBudgetError?: boolean;
   releaseQuotaResult?: unknown;
   onReserveBudget?: () => void;
@@ -87,7 +90,7 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
       if (mode.markQuotaSentError) {
         return { data: null, error: { message: 'connection failed' } };
       }
-      return { data: { status: 'sent' }, error: null };
+      return { data: mode.markQuotaSentResult ?? { status: 'sent' }, error: null };
     }
 
     if (name === 'release_quota') {
@@ -101,7 +104,7 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
       if (mode.confirmQuotaError) {
         return { data: null, error: { message: 'connection failed' } };
       }
-      return { data: { status: 'confirmed' }, error: null };
+      return { data: mode.confirmQuotaResult ?? { status: 'confirmed' }, error: null };
     }
 
     if (name === 'reserve_budget') {
@@ -125,7 +128,7 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
       if (mode.confirmBudgetError) {
         return { data: null, error: { message: 'connection failed' } };
       }
-      return { data: { status: 'confirmed' }, error: null };
+      return { data: mode.confirmBudgetResult ?? { status: 'confirmed' }, error: null };
     }
 
     if (name === 'release_budget') {
@@ -367,7 +370,7 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(rpc).toHaveBeenCalledWith('reserve_budget', expect.anything());
   });
 
-  it('I: todos los proveedores fallan conservan la cuota sent_uncertain', async () => {
+  it('I: HTTP 500 post-envío confirma cuota y presupuesto incierto', async () => {
     setupRealEnv();
     process.env.AI_GEMINI_API_KEY = 'test-key';
     const client = createMockClient();
@@ -388,10 +391,16 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(response.status).toBe(503);
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).toHaveBeenCalledWith(
+      'confirm_budget',
+      expect.objectContaining({ p_cost_estimated: true })
+    );
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_budget', expect.anything());
   });
 
-  it('J: timeout posterior al envío conserva cuota y presupuesto', async () => {
+  it('J: timeout posterior al envío confirma cuota y presupuesto', async () => {
     setupRealEnv();
     process.env.AI_GEMINI_API_KEY = 'test-key';
 
@@ -412,6 +421,11 @@ describe('POST /api/generate T-004-6 protections', () => {
 
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).toHaveBeenCalledWith(
+      'confirm_budget',
+      expect.objectContaining({ p_cost_estimated: true })
+    );
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_budget', expect.anything());
   });
@@ -490,6 +504,7 @@ describe('POST /api/generate T-004-6 protections', () => {
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
     expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -517,6 +532,7 @@ describe('POST /api/generate T-004-6 protections', () => {
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -544,10 +560,11 @@ describe('POST /api/generate T-004-6 protections', () => {
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
     expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('T: fallback post-envío a pre-envío conserva cuota y presupuesto incierto', async () => {
+  it('T: fallback post-envío a pre-envío confirma cuota y conserva presupuesto incierto', async () => {
     setupRealEnv();
     process.env.AI_GROQ_API_KEY = 'test-groq-key';
     process.env.AI_GROQ_ENABLED = 'true';
@@ -590,7 +607,349 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(rpcNames.filter((name) => name === 'release_budget')).toHaveLength(1);
     expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+  });
+
+  it('T-004-10.1: confirm_quota not_found después de éxito no se trata como éxito', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmQuotaResult: { status: 'not_found' },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it.each(['released', 'expired'] as const)(
+    'T-004-10.1: confirm_quota already_processed con estado previo %s no se trata como éxito',
+    async (previousStatus) => {
+      setupRealEnv();
+      const client = createMockClient({
+        confirmQuotaResult: {
+          status: 'already_processed',
+          previous_status: previousStatus,
+        },
+      });
+      setSupabaseClient(client);
+      authorizeRealCalls();
+
+      const response = await POST(
+        buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+      );
+
+      expect(response.status).toBe(503);
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.errorCode).toBe('INTERNAL_ERROR');
+      const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+      expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+      expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    }
+  );
+
+  it('T-004-10.1: confirm_quota already_processed completed es idempotente', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmQuotaResult: {
+        status: 'already_processed',
+        previous_status: 'completed',
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+  });
+
+  it('T-004-10.1: confirm_budget not_found después de éxito no se trata como éxito', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmBudgetResult: { status: 'not_found' },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('T-004-10.1: confirm_budget already_processed released no se trata como éxito', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmBudgetResult: {
+        status: 'already_processed',
+        previous_status: 'released',
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('T-004-10.1: confirm_budget already_processed confirmed es idempotente', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmBudgetResult: {
+        status: 'already_processed',
+        previous_status: 'confirmed',
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+  });
+
+  it('T-004-10.1: mark_quota_sent not_found falla cerrado antes del proveedor', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      markQuotaSentResult: { status: 'not_found' },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['released', 'expired'] as const)(
+    'T-004-10.1: mark_quota_sent already_processed %s falla cerrado antes del proveedor',
+    async (previousStatus) => {
+      setupRealEnv();
+      const client = createMockClient({
+        markQuotaSentResult: {
+          status: 'already_processed',
+          previous_status: previousStatus,
+        },
+      });
+      setSupabaseClient(client);
+      authorizeRealCalls();
+
+      const response = await POST(
+        buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+      );
+
+      expect(response.status).toBe(503);
+      const data = await response.json();
+      expect(data.success).toBe(false);
+      expect(data.errorCode).toBe('INTERNAL_ERROR');
+      const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+      expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+      expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+      expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('T-004-10.1: mark_quota_sent already_sent permite continuar', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      markQuotaSentResult: {
+        status: 'already_sent',
+        previous_status: 'sent_uncertain',
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+  });
+
+  it.each(['released', 'expired'] as const)(
+    'T-004-10.1: release_quota already_processed %s se acepta como compensación',
+    async (previousStatus) => {
+      setupRealEnv();
+      const abortController = new AbortController();
+      const client = createMockClient({
+        onReserveBudget: () => abortController.abort(),
+        releaseQuotaResult: {
+          status: 'already_processed',
+          previous_status: previousStatus,
+        },
+      });
+      setSupabaseClient(client);
+      authorizeRealCalls();
+
+      const response = await POST(
+        buildRequest(
+          validBody,
+          { 'x-real-ip': '192.0.2.10' },
+          abortController.signal
+        )
+      );
+
+      expect(response.status).toBe(503);
+      const data = await response.json();
+      expect(data.errorCode).toBe('PROVIDER_UNAVAILABLE');
+      const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+      expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+      expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('T-004-10.1: release_quota already_processed completed no se acepta como compensación', async () => {
+    setupRealEnv();
+    const abortController = new AbortController();
+    const client = createMockClient({
+      onReserveBudget: () => abortController.abort(),
+      releaseQuotaResult: {
+        status: 'already_processed',
+        previous_status: 'completed',
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(
+        validBody,
+        { 'x-real-ip': '192.0.2.10' },
+        abortController.signal
+      )
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('T-004-10.1: fallo al confirmar cuota no se trata como éxito', async () => {
+    setupRealEnv();
+    const client = createMockClient({ confirmQuotaError: true });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('T-004-10.1: fallo al confirmar presupuesto no se trata como éxito', async () => {
+    setupRealEnv();
+    const client = createMockClient({ confirmBudgetError: true });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('T-004-10.1: fallo de presupuesto y cuota no libera cuota ni regenera', async () => {
+    setupRealEnv();
+    const client = createMockClient({
+      confirmBudgetError: true,
+      confirmQuotaError: true,
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('confirm_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_budget', expect.anything());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

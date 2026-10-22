@@ -38,6 +38,8 @@ const originalEnv: Record<string, string | undefined> = {};
 type MockClientOptions = {
   releaseQuotaResult?: unknown;
   releaseQuotaError?: boolean;
+  confirmQuotaResult?: unknown;
+  confirmQuotaError?: boolean;
 };
 
 function createMockClient(options: MockClientOptions = {}): {
@@ -83,7 +85,14 @@ function createMockClient(options: MockClientOptions = {}): {
     }
 
     if (name === 'confirm_quota') {
-      return { data: { status: 'confirmed' }, error: null };
+      if (options.confirmQuotaError) {
+        return { data: null, error: { message: 'confirm failed' } };
+      }
+
+      return {
+        data: options.confirmQuotaResult ?? { status: 'confirmed' },
+        error: null,
+      };
     }
 
     if (name === 'confirm_budget') {
@@ -195,6 +204,7 @@ describe('generateDescription compensación exterior', () => {
       errorCode: 'INTERNAL_ERROR',
       errorMessage: 'provider unavailable',
       consumptionUnknown: false,
+      quotaDisposition: 'release',
     });
 
     const result = await generateDescription(validInput, {
@@ -218,6 +228,7 @@ describe('generateDescription compensación exterior', () => {
       errorCode: 'INTERNAL_ERROR',
       errorMessage: 'provider unavailable',
       consumptionUnknown: false,
+      quotaDisposition: 'release',
     });
 
     const result = await generateDescription(validInput, {
@@ -229,5 +240,102 @@ describe('generateDescription compensación exterior', () => {
     expect(result.response.success).toBe(false);
     expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_budget', expect.anything());
+  });
+
+  it('confirma la cuota cuando la disposición es complete aunque la generación falle', async () => {
+    const { client, rpc } = createMockClient();
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    mockGenerateWithFallback.mockResolvedValueOnce({
+      success: false,
+      errorCode: 'INTERNAL_ERROR',
+      errorMessage: 'budget confirmation failed',
+      consumptionUnknown: true,
+      quotaDisposition: 'complete',
+    });
+
+    const result = await generateDescription(validInput, {
+      visitorId,
+      clientIp: '192.0.2.10',
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.response.success).toBe(false);
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('no libera ni confirma la cuota cuando la disposición es leave_uncertain', async () => {
+    const { client, rpc } = createMockClient();
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    mockGenerateWithFallback.mockResolvedValueOnce({
+      success: false,
+      errorCode: 'INTERNAL_ERROR',
+      errorMessage: 'compensation failed',
+      consumptionUnknown: false,
+      compensationFailed: true,
+      quotaDisposition: 'leave_uncertain',
+    });
+
+    const result = await generateDescription(validInput, {
+      visitorId,
+      clientIp: '192.0.2.10',
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.response.success).toBe(false);
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('no devuelve 200 si confirmQuota devuelve un estado incompatible', async () => {
+    const { client, rpc } = createMockClient({
+      confirmQuotaResult: { status: 'not_found' },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    mockGenerateWithFallback.mockResolvedValueOnce({
+      success: true,
+      result: { text: 'texto generado', tokensUsed: 10 },
+      providerName: 'gemini',
+      quotaDisposition: 'complete',
+    });
+
+    const result = await generateDescription(validInput, {
+      visitorId,
+      clientIp: '192.0.2.10',
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.response.success).toBe(false);
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
+  it('no devuelve 200 si confirmQuota lanza una excepción', async () => {
+    const { client, rpc } = createMockClient({ confirmQuotaError: true });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    mockGenerateWithFallback.mockResolvedValueOnce({
+      success: true,
+      result: { text: 'texto generado', tokensUsed: 10 },
+      providerName: 'gemini',
+      quotaDisposition: 'complete',
+    });
+
+    const result = await generateDescription(validInput, {
+      visitorId,
+      clientIp: '192.0.2.10',
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.response.success).toBe(false);
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
   });
 });

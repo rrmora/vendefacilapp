@@ -32,7 +32,10 @@ import {
   generateWithFallback,
   resetOrchestratorCache,
 } from '@/lib/ai/orchestrator';
-import type { BudgetController } from '@/lib/ai/orchestrator';
+import type {
+  BudgetController,
+  BudgetControllerResult,
+} from '@/lib/ai/orchestrator';
 import { AIProviderError } from '@/lib/ai/errors';
 import type {
   AIProviderCallContext,
@@ -110,8 +113,8 @@ function createPreSendError(provider: 'gemini' | 'groq' | 'openai'): AIProviderE
 }
 
 function createBudgetController() {
-  const reserve = vi.fn(async () => ({
-    allowed: true as const,
+  const reserve = vi.fn(async (): Promise<BudgetControllerResult> => ({
+    allowed: true,
     reservation: {
       reservationId: 'budget-1',
       maxCostUsd: 0.001843,
@@ -138,6 +141,7 @@ describe('generateWithFallback', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.quotaDisposition).toBe('release');
     }
   });
 
@@ -154,6 +158,7 @@ describe('generateWithFallback', () => {
     if (result.success) {
       expect(result.providerName).toBe('gemini');
       expect(result.result.text).toBe('Descripción de Gemini');
+      expect(result.quotaDisposition).toBe('complete');
     }
     expect(mockGroqGenerate).not.toHaveBeenCalled();
   });
@@ -387,6 +392,7 @@ describe('generateWithFallback', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorCode).toBe('PROVIDER_UNAVAILABLE');
+      expect(result.quotaDisposition).toBe('release');
       expect(result.consumptionUnknown).toBe(false);
     }
     expect(budget.release).toHaveBeenCalledWith('budget-1');
@@ -447,6 +453,7 @@ describe('generateWithFallback', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
+      expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
     expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
@@ -481,6 +488,7 @@ describe('generateWithFallback', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorCode).toBe('PROVIDER_UNAVAILABLE');
+      expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
     expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
@@ -509,6 +517,7 @@ describe('generateWithFallback', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
+      expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
   });
@@ -559,9 +568,135 @@ describe('generateWithFallback', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.quotaDisposition).toBe('leave_uncertain');
       expect(result.compensationFailed).toBe(true);
       expect(result.consumptionUnknown).toBe(true);
     }
     expect(mockGroqGenerate).not.toHaveBeenCalled();
+  });
+
+  it('marca release cuando el presupuesto se rechaza antes de llamar al proveedor', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'budget_exceeded',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('BUDGET_EXCEEDED');
+      expect(result.quotaDisposition).toBe('release');
+    }
+    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('clasifica como complete una excepción desconocida del proveedor', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockRejectedValue(new Error('socket hang up'));
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.quotaDisposition).toBe('complete');
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('no clasifica como dispatch una excepción al reservar presupuesto', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+
+    const budget = createBudgetController();
+    budget.reserve.mockRejectedValue(new Error('budget database unavailable'));
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.quotaDisposition).toBe('release');
+      expect(result.consumptionUnknown).toBe(false);
+    }
+    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('mantiene complete si falla la confirmación de presupuesto tras el envío', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+
+    const budget = createBudgetController();
+    budget.confirmReservation.mockRejectedValue(
+      new Error('budget database unavailable')
+    );
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.quotaDisposition).toBe('complete');
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('mantiene complete si falla la compensación del fallback tras un envío', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    mockGroqGenerate.mockRejectedValue(createPreSendError('groq'));
+
+    const budget = createBudgetController();
+    budget.reserve
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+      })
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
+      });
+    budget.release.mockRejectedValue(new Error('budget database unavailable'));
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.quotaDisposition).toBe('complete');
+      expect(result.compensationFailed).toBe(true);
+    }
+    expect(budget.release).toHaveBeenCalledWith('budget-2');
   });
 });

@@ -10,16 +10,23 @@ import type {
   IAIProvider,
 } from './types';
 
+export type QuotaDisposition =
+  | 'release'
+  | 'complete'
+  | 'leave_uncertain';
+
 export interface OrchestratorResult {
   success: true;
   result: AIProviderGenerationResult;
   providerName: string;
+  quotaDisposition: 'complete';
 }
 
 export interface OrchestratorError {
   success: false;
   errorCode: string;
   errorMessage: string;
+  quotaDisposition: QuotaDisposition;
   consumptionUnknown?: boolean;
   compensationFailed?: boolean;
 }
@@ -41,6 +48,14 @@ export interface BudgetController {
   confirmReservation(reservationId: string, tokensUsed: number | null, model: string): Promise<void>;
   consumeUnknown(reservationId: string, model: string): Promise<void>;
   release(reservationId: string): Promise<void>;
+}
+
+function resolveQuotaDisposition(
+  anyRequestDispatched: boolean,
+  compensationFailed: boolean
+): QuotaDisposition {
+  if (anyRequestDispatched) return 'complete';
+  return compensationFailed ? 'leave_uncertain' : 'release';
 }
 
 export interface OrchestratorOptions {
@@ -117,6 +132,7 @@ export async function generateWithFallback(
       success: false,
       errorCode: 'INTERNAL_ERROR',
       errorMessage: 'No hay proveedores de IA configurados.',
+      quotaDisposition: 'release',
     };
   }
 
@@ -125,6 +141,7 @@ export async function generateWithFallback(
   let lastError: AIProviderError | null = null;
   let consumptionUnknown = false;
   let compensationFailed = false;
+  let anyRequestDispatched = false;
 
   for (const providerInfo of providers) {
     if (context.abortSignal?.aborted) {
@@ -132,6 +149,10 @@ export async function generateWithFallback(
         success: false,
         errorCode: 'INTERNAL_ERROR',
         errorMessage: 'Solicitud cancelada.',
+        quotaDisposition: resolveQuotaDisposition(
+          anyRequestDispatched,
+          compensationFailed
+        ),
         consumptionUnknown,
       };
     }
@@ -143,6 +164,10 @@ export async function generateWithFallback(
         success: false,
         errorCode: 'PROVIDER_UNAVAILABLE',
         errorMessage: 'Tiempo de espera agotado.',
+        quotaDisposition: resolveQuotaDisposition(
+          anyRequestDispatched,
+          compensationFailed
+        ),
         consumptionUnknown,
       };
     }
@@ -150,6 +175,7 @@ export async function generateWithFallback(
     const providerStart = Date.now();
     const provider = providerInfo.create();
     let reservationId: string | null = null;
+    let providerCallStarted = false;
 
     try {
       if (budgetController && providerInfo.isPaid) {
@@ -160,6 +186,10 @@ export async function generateWithFallback(
               success: false,
               errorCode: 'BUDGET_EXCEEDED',
               errorMessage: 'Presupuesto de IA insuficiente.',
+              quotaDisposition: resolveQuotaDisposition(
+                anyRequestDispatched,
+                compensationFailed
+              ),
               consumptionUnknown,
             };
           }
@@ -167,6 +197,10 @@ export async function generateWithFallback(
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo verificar el presupuesto.',
+            quotaDisposition: resolveQuotaDisposition(
+              anyRequestDispatched,
+              compensationFailed
+            ),
             consumptionUnknown,
           };
         }
@@ -174,11 +208,13 @@ export async function generateWithFallback(
         reservationId = budget.reservation.reservationId;
       }
 
+      providerCallStarted = true;
       const result = await provider.generate(request, {
         ...context,
         timeoutMs: Math.min(context.timeoutMs, remaining),
         remainingMs: remaining,
       });
+      anyRequestDispatched = true;
 
       options.onProviderAttempt?.({
         provider: providerInfo.name,
@@ -209,6 +245,10 @@ export async function generateWithFallback(
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo conciliar el presupuesto.',
+            quotaDisposition: resolveQuotaDisposition(
+              anyRequestDispatched,
+              compensationFailed
+            ),
             consumptionUnknown,
           };
         }
@@ -218,13 +258,16 @@ export async function generateWithFallback(
         success: true,
         result,
         providerName: providerInfo.name,
+        quotaDisposition: 'complete',
       };
     } catch (error) {
       const durationMs = Date.now() - providerStart;
       const requestDispatched =
-        error instanceof AIProviderError ? error.requestDispatched : true;
+        providerCallStarted &&
+        (error instanceof AIProviderError ? error.requestDispatched : true);
 
       if (requestDispatched) {
+        anyRequestDispatched = true;
         consumptionUnknown = true;
         if (reservationId && budgetController) {
           try {
@@ -258,6 +301,10 @@ export async function generateWithFallback(
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo liberar la reserva de presupuesto.',
+            quotaDisposition: resolveQuotaDisposition(
+              anyRequestDispatched,
+              compensationFailed
+            ),
             consumptionUnknown,
             compensationFailed,
           };
@@ -269,12 +316,20 @@ export async function generateWithFallback(
               success: false,
               errorCode: 'BUDGET_EXCEEDED',
               errorMessage: 'Cuota del proveedor agotada.',
+              quotaDisposition: resolveQuotaDisposition(
+                anyRequestDispatched,
+                compensationFailed
+              ),
               consumptionUnknown,
             };
           }
           return {
             success: false,
             errorCode: toPublicErrorCode(error.kind),
+            quotaDisposition: resolveQuotaDisposition(
+              anyRequestDispatched,
+              compensationFailed
+            ),
             errorMessage: 'No se pudo generar la descripción.',
             consumptionUnknown,
           };
@@ -296,6 +351,10 @@ export async function generateWithFallback(
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo liberar la reserva de presupuesto.',
+            quotaDisposition: resolveQuotaDisposition(
+              anyRequestDispatched,
+              compensationFailed
+            ),
             consumptionUnknown,
             compensationFailed,
           };
@@ -314,6 +373,10 @@ export async function generateWithFallback(
     return {
       success: false,
       errorCode: toPublicErrorCode(lastError.kind),
+      quotaDisposition: resolveQuotaDisposition(
+        anyRequestDispatched,
+        compensationFailed
+      ),
       errorMessage: 'No se pudo generar la descripción. Inténtalo de nuevo.',
       consumptionUnknown,
     };
@@ -322,6 +385,10 @@ export async function generateWithFallback(
   return {
     success: false,
     errorCode: 'INTERNAL_ERROR',
+    quotaDisposition: resolveQuotaDisposition(
+      anyRequestDispatched,
+      compensationFailed
+    ),
     errorMessage: 'No se pudo generar la descripción.',
     consumptionUnknown,
   };

@@ -91,6 +91,32 @@ function quotaReleaseSucceeded(
   );
 }
 
+function quotaConfirmationSucceeded(
+  result: Awaited<ReturnType<typeof confirmQuota>>
+): boolean {
+  return (
+    result.status === 'confirmed' ||
+    (result.status === 'already_processed' &&
+      result.previousStatus === 'completed')
+  );
+}
+
+function quotaMarkSentSucceeded(
+  result: Awaited<ReturnType<typeof markQuotaSent>>
+): boolean {
+  return result.status === 'sent' || result.status === 'already_sent';
+}
+
+function budgetConfirmationSucceeded(
+  result: Awaited<ReturnType<typeof confirmBudget>>
+): boolean {
+  return (
+    result.status === 'confirmed' ||
+    (result.status === 'already_processed' &&
+      result.previousStatus === 'confirmed')
+  );
+}
+
 export interface GenerateDescriptionResult {
   response: IDescriptionResponse;
   status: number;
@@ -265,11 +291,17 @@ export async function generateDescription(
         costEstimated,
       });
 
-      await confirmBudget({
+      const result = await confirmBudget({
         reservationId,
         actualCostUsd,
         costEstimated,
       });
+
+      if (!budgetConfirmationSucceeded(result)) {
+        throw new BudgetServiceError(
+          'No se pudo confirmar la reserva de presupuesto.'
+        );
+      }
     },
     consumeUnknown: async (reservationId, model) => {
       const pricing = getModelPricing(model);
@@ -281,11 +313,17 @@ export async function generateDescription(
         costEstimated,
       });
 
-      await confirmBudget({
+      const result = await confirmBudget({
         reservationId,
         actualCostUsd,
         costEstimated,
       });
+
+      if (!budgetConfirmationSucceeded(result)) {
+        throw new BudgetServiceError(
+          'No se pudo confirmar la reserva de presupuesto.'
+        );
+      }
     },
     release: async (reservationId) => {
       const result = await releaseBudget(reservationId);
@@ -307,7 +345,17 @@ export async function generateDescription(
 
   if (quotaReservationId) {
     try {
-      await markQuotaSent(quotaReservationId);
+      const markResult = await markQuotaSent(quotaReservationId);
+
+      if (!quotaMarkSentSucceeded(markResult)) {
+        return {
+          response: errorResponse(
+            'INTERNAL_ERROR',
+            'La generación con IA no está disponible todavía.'
+          ),
+          status: 503,
+        };
+      }
     } catch {
       return {
         response: errorResponse(
@@ -387,42 +435,30 @@ export async function generateDescription(
       }
     );
 
-    if (outcome.success) {
-      if (quotaReservationId) {
-        try {
-          await confirmQuota(quotaReservationId);
-        } catch {
-          return {
-            response: errorResponse(
-              'INTERNAL_ERROR',
-              'La generación con IA no está disponible todavía.'
-            ),
-            status: 503,
-          };
-        }
-      }
-
-      return {
-        response: {
-          success: true,
-          generatedText: outcome.result.text,
-          tokensUsed: outcome.result.tokensUsed,
-        },
-        status: 200,
-      };
-    }
-
-    if (quotaReservationId && !outcome.consumptionUnknown) {
+    if (quotaReservationId) {
       try {
-        const releaseResult = await releaseQuota(quotaReservationId);
-        if (!quotaReleaseSucceeded(releaseResult)) {
-          return {
-            response: errorResponse(
-              'INTERNAL_ERROR',
-              'La generación con IA no está disponible todavía.'
-            ),
-            status: 503,
-          };
+        if (outcome.quotaDisposition === 'release') {
+          const releaseResult = await releaseQuota(quotaReservationId);
+          if (!quotaReleaseSucceeded(releaseResult)) {
+            return {
+              response: errorResponse(
+                'INTERNAL_ERROR',
+                'La generación con IA no está disponible todavía.'
+              ),
+              status: 503,
+            };
+          }
+        } else if (outcome.quotaDisposition === 'complete') {
+          const confirmResult = await confirmQuota(quotaReservationId);
+          if (!quotaConfirmationSucceeded(confirmResult)) {
+            return {
+              response: errorResponse(
+                'INTERNAL_ERROR',
+                'La generación con IA no está disponible todavía.'
+              ),
+              status: 503,
+            };
+          }
         }
       } catch {
         return {
@@ -435,11 +471,23 @@ export async function generateDescription(
       }
     }
 
+    if (outcome.success) {
+      return {
+        response: {
+          success: true,
+          generatedText: outcome.result.text,
+          tokensUsed: outcome.result.tokensUsed,
+        },
+        status: 200,
+      };
+    }
+
     let status = 500;
     if (outcome.compensationFailed) status = 503;
     else if (outcome.errorCode === 'RATE_LIMITED') status = 429;
     else if (outcome.errorCode === 'BUDGET_EXCEEDED') status = 402;
     else if (outcome.errorCode === 'PROVIDER_UNAVAILABLE') status = 503;
+    else if (outcome.errorCode === 'INTERNAL_ERROR') status = 503;
     else status = 500;
 
     return {
