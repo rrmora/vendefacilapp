@@ -96,6 +96,7 @@ function createRecoverableError(provider: 'gemini' | 'groq' | 'openai'): AIProvi
     kind: 'PROVIDER_ERROR',
     provider,
     message: 'Temporary error',
+    requestDispatched: true,
   });
 }
 
@@ -450,6 +451,51 @@ describe('generateWithFallback', () => {
     }
     expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
     expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('conserva el consumo incierto si el fallback falla antes de enviar', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    mockGroqGenerate.mockRejectedValue(createPreSendError('groq'));
+
+    const budget = createBudgetController();
+    budget.reserve
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+      })
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
+      });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('PROVIDER_UNAVAILABLE');
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGeminiGenerate.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGroqGenerate.mock.invocationCallOrder[0]!
+    );
+    expect(budget.reserve).toHaveBeenNthCalledWith(1, 'gemini', 'gemini-2.5-flash');
+    expect(budget.reserve).toHaveBeenNthCalledWith(2, 'groq', 'llama-3.3-70b-versatile');
+    expect(budget.consumeUnknown).toHaveBeenCalledTimes(1);
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.release).toHaveBeenCalledTimes(1);
+    expect(budget.release).toHaveBeenCalledWith('budget-2');
+    expect(budget.release).not.toHaveBeenCalledWith('budget-1');
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
   });
 
   it('marca consumo incierto aunque el proveedor no tenga reserva de presupuesto', async () => {

@@ -153,6 +153,8 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
 const ENV_KEYS = [
   'AI_ENABLED',
   'AI_GEMINI_API_KEY',
+  'AI_GROQ_API_KEY',
+  'AI_GROQ_ENABLED',
   'TRUST_PROXY',
   'AI_GEMINI_MODEL',
   'AI_GEMINI_TIMEOUT_MS',
@@ -543,6 +545,52 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
     expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('T: fallback post-envío a pre-envío conserva cuota y presupuesto incierto', async () => {
+    setupRealEnv();
+    process.env.AI_GROQ_API_KEY = 'test-groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    const abortController = new AbortController();
+    let reserveCount = 0;
+    const client = createMockClient({
+      onReserveBudget: () => {
+        reserveCount += 1;
+        if (reserveCount === 2) {
+          abortController.abort();
+        }
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    fetchMock.mockRejectedValueOnce(abortError);
+
+    const response = await POST(
+      buildRequest(
+        validBody,
+        { 'x-real-ip': '192.0.2.10' },
+        abortController.signal
+      )
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.success).toBe(false);
+    expect(data.errorCode).toBe('PROVIDER_UNAVAILABLE');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    const rpcNames = rpc.mock.calls.map((call) => call[0] as string);
+    expect(rpcNames.filter((name) => name === 'reserve_budget')).toHaveLength(2);
+    expect(rpcNames.filter((name) => name === 'confirm_budget')).toHaveLength(1);
+    expect(rpcNames.filter((name) => name === 'release_budget')).toHaveLength(1);
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
   });
 });
 
