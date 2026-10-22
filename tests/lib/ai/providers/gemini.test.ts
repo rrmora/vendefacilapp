@@ -205,6 +205,7 @@ describe('GeminiProvider', () => {
     await expect(provider.generate(baseRequest, context)).rejects.toMatchObject({
       kind: 'PROVIDER_ERROR',
       message: 'Request aborted by client',
+      requestDispatched: false,
     });
     expect(fetch).not.toHaveBeenCalled();
   });

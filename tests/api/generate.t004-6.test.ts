@@ -15,11 +15,16 @@ const validBody = {
   userNotes: 'iPhone 13 de 128 GB, batería al 85%, incluye cargador',
 };
 
-function buildRequest(body: unknown, headers: Record<string, string> = {}): Request {
+function buildRequest(
+  body: unknown,
+  headers: Record<string, string> = {},
+  signal?: AbortSignal
+): Request {
   return new Request('http://localhost:3000/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
+    signal,
   });
 }
 
@@ -34,6 +39,9 @@ type MockMode = {
   budgetError?: boolean;
   recordError?: boolean;
   markQuotaSentError?: boolean;
+  releaseBudgetError?: boolean;
+  releaseQuotaResult?: unknown;
+  onReserveBudget?: () => void;
 };
 
 function createMockClient(mode: MockMode = {}): SupabaseClient {
@@ -83,7 +91,10 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
     }
 
     if (name === 'release_quota') {
-      return { data: { status: 'released' }, error: null };
+      return {
+        data: mode.releaseQuotaResult ?? { status: 'released' },
+        error: null,
+      };
     }
 
     if (name === 'confirm_quota') {
@@ -94,6 +105,7 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
     }
 
     if (name === 'reserve_budget') {
+      mode.onReserveBudget?.();
       return {
         data:
           mode.budgetResult ?? {
@@ -117,6 +129,9 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
     }
 
     if (name === 'release_budget') {
+      if (mode.releaseBudgetError) {
+        return { data: null, error: { message: 'connection failed' } };
+      }
       return { data: { status: 'released' }, error: null };
     }
 
@@ -374,40 +389,28 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
   });
 
-  it('J: timeout posterior al envío no libera presupuesto', async () => {
-    process.env.AI_ENABLED = 'true';
+  it('J: timeout posterior al envío conserva cuota y presupuesto', async () => {
+    setupRealEnv();
     process.env.AI_GEMINI_API_KEY = 'test-key';
-    process.env.TRUST_PROXY = 'true';
-    process.env.AI_GEMINI_TIMEOUT_MS = '1';
-    process.env.AI_GLOBAL_TIMEOUT_MS = '1';
 
     const client = createMockClient();
     setSupabaseClient(client);
     authorizeRealCalls();
 
-    fetchMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(() => {
-            resolve(
-              new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'x' }] } }] }), {
-                status: 200,
-                headers: { 'content-type': 'application/json' },
-              })
-            );
-          }, 50);
-        })
-    );
+    const abortError = new Error('The operation was aborted');
+    abortError.name = 'AbortError';
+    fetchMock.mockRejectedValueOnce(abortError);
 
     const response = await POST(
       buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    expect([503, 500, 408, 200]).toContain(response.status);
+    expect(response.status).toBe(503);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_budget', expect.anything());
   });
 
@@ -462,6 +465,84 @@ describe('POST /api/generate T-004-6 protections', () => {
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('confirm_quota', expect.anything());
+  });
+
+  it('Q: fallo pre-envío libera presupuesto y cuota sin llamar al proveedor', async () => {
+    setupRealEnv();
+    const abortController = new AbortController();
+    const client = createMockClient({
+      onReserveBudget: () => abortController.abort(),
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(
+        validBody,
+        { 'x-real-ip': '192.0.2.10' },
+        abortController.signal
+      )
+    );
+
+    expect(response.status).toBe(503);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('R: si no puede liberar presupuesto pre-envío falla cerrado y conserva la cuota', async () => {
+    setupRealEnv();
+    const abortController = new AbortController();
+    const client = createMockClient({
+      onReserveBudget: () => abortController.abort(),
+      releaseBudgetError: true,
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(
+        validBody,
+        { 'x-real-ip': '192.0.2.10' },
+        abortController.signal
+      )
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('S: si no puede liberar cuota pre-envío responde 503', async () => {
+    setupRealEnv();
+    const abortController = new AbortController();
+    const client = createMockClient({
+      onReserveBudget: () => abortController.abort(),
+      releaseQuotaResult: { status: 'not_found' },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(
+      buildRequest(
+        validBody,
+        { 'x-real-ip': '192.0.2.10' },
+        abortController.signal
+      )
+    );
+
+    expect(response.status).toBe(503);
+    const data = await response.json();
+    expect(data.errorCode).toBe('INTERNAL_ERROR');
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).toHaveBeenCalledWith('release_budget', expect.anything());
+    expect(rpc).toHaveBeenCalledWith('release_quota', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

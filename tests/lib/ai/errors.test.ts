@@ -49,6 +49,23 @@ describe('AIProviderError', () => {
       expect(isRecoverableKind(kind)).toBe(false);
     }
   });
+
+  it('trata el envío como desconocido por defecto y permite declararlo pre-envío', () => {
+    const unknown = new AIProviderError({
+      kind: 'PROVIDER_ERROR',
+      provider: 'gemini',
+      message: 'detalle interno',
+    });
+    const preSend = new AIProviderError({
+      kind: 'PROVIDER_ERROR',
+      provider: 'gemini',
+      message: 'detalle interno',
+      requestDispatched: false,
+    });
+
+    expect(unknown.requestDispatched).toBe(true);
+    expect(preSend.requestDispatched).toBe(false);
+  });
 });
 
 describe('toPublicErrorCode', () => {

@@ -25,17 +25,25 @@ export class AIProviderError extends Error {
   readonly kind: AIProviderErrorKind;
   readonly provider: AIProviderName;
   readonly recoverable: boolean;
+  /**
+   * `false` only when no provider request was dispatched (for example, the
+   * caller aborted before `fetch`). Unknown failures default to `true` so
+   * budget and quota are never released without evidence.
+   */
+  readonly requestDispatched: boolean;
 
   constructor(options: {
     kind: AIProviderErrorKind;
     provider: AIProviderName;
     message: string;
+    requestDispatched?: boolean;
   }) {
     super(options.message);
     this.name = 'AIProviderError';
     this.kind = options.kind;
     this.provider = options.provider;
     this.recoverable = RECOVERABLE_KINDS.has(options.kind);
+    this.requestDispatched = options.requestDispatched ?? true;
   }
 }
 

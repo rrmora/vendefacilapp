@@ -122,38 +122,48 @@ export class OpenAIProvider implements IAIProvider {
     request: AIProviderGenerationRequest,
     context: AIProviderCallContext
   ): Promise<AIProviderGenerationResult> {
-    const { systemPrompt, userContent } = buildDescriptionPrompt(request);
+    let requestDispatched = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), context.timeoutMs);
-
     const onAbort = () => controller.abort();
-    if (context.abortSignal) {
-      if (context.abortSignal.aborted) {
-        clearTimeout(timeoutId);
-        throw new AIProviderError({
-          kind: 'PROVIDER_ERROR',
-          provider: 'openai',
-          message: 'Request aborted by client',
-        });
-      }
-      context.abortSignal.addEventListener('abort', onAbort, { once: true });
-    }
 
     try {
+      const { systemPrompt, userContent } = buildDescriptionPrompt(request);
+      const body = JSON.stringify({
+        model: this.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+      });
+
+      timeoutId = setTimeout(() => controller.abort(), context.timeoutMs);
+
+      if (context.abortSignal) {
+        context.abortSignal.addEventListener('abort', onAbort, { once: true });
+
+        if (context.abortSignal.aborted) {
+          throw new AIProviderError({
+            kind: 'PROVIDER_ERROR',
+            provider: 'openai',
+            message: 'Request aborted by client',
+            requestDispatched: false,
+          });
+        }
+      }
+
+      // Only this assignment marks the request as dispatched. Any failure
+      // before it is local preparation and cannot have consumed inference.
+      requestDispatched = true;
+
       const response = await fetch(OPENAI_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent },
-          ],
-        }),
+        body,
         signal: controller.signal,
       });
 
@@ -194,15 +204,19 @@ export class OpenAIProvider implements IAIProvider {
           kind: 'PROVIDER_ERROR',
           provider: 'openai',
           message: 'Request timed out or was aborted',
+          requestDispatched,
         });
       }
       throw new AIProviderError({
         kind: 'PROVIDER_ERROR',
         provider: 'openai',
         message: error instanceof Error ? error.message : 'Unknown error',
+        requestDispatched,
       });
     } finally {
-      clearTimeout(timeoutId);
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       if (context.abortSignal) {
         context.abortSignal.removeEventListener('abort', onAbort);
       }

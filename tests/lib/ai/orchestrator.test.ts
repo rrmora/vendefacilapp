@@ -32,6 +32,7 @@ import {
   generateWithFallback,
   resetOrchestratorCache,
 } from '@/lib/ai/orchestrator';
+import type { BudgetController } from '@/lib/ai/orchestrator';
 import { AIProviderError } from '@/lib/ai/errors';
 import type {
   AIProviderCallContext,
@@ -96,6 +97,37 @@ function createRecoverableError(provider: 'gemini' | 'groq' | 'openai'): AIProvi
     provider,
     message: 'Temporary error',
   });
+}
+
+function createPreSendError(provider: 'gemini' | 'groq' | 'openai'): AIProviderError {
+  return new AIProviderError({
+    kind: 'PROVIDER_ERROR',
+    provider,
+    message: 'Aborted before dispatch',
+    requestDispatched: false,
+  });
+}
+
+function createBudgetController() {
+  const reserve = vi.fn(async () => ({
+    allowed: true as const,
+    reservation: {
+      reservationId: 'budget-1',
+      maxCostUsd: 0.001843,
+    },
+  }));
+  const confirmReservation = vi.fn(async () => {});
+  const consumeUnknown = vi.fn(async () => {});
+  const release = vi.fn(async () => {});
+
+  const controller: BudgetController = {
+    reserve,
+    confirmReservation,
+    consumeUnknown,
+    release,
+  };
+
+  return { controller, reserve, confirmReservation, consumeUnknown, release };
 }
 
 describe('generateWithFallback', () => {
@@ -337,5 +369,153 @@ describe('generateWithFallback', () => {
     expect(attempts[0]!.provider).toBe('gemini');
     expect(attempts[0]!.success).toBe(true);
     expect(typeof attempts[0]!.durationMs).toBe('number');
+  });
+
+  it('libera la reserva cuando el proveedor falla antes de enviar', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('PROVIDER_UNAVAILABLE');
+      expect(result.consumptionUnknown).toBe(false);
+    }
+    expect(budget.release).toHaveBeenCalledWith('budget-1');
+    expect(budget.consumeUnknown).not.toHaveBeenCalled();
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
+  });
+
+  it('libera la primera reserva y conserva el consumo del fallback exitoso', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
+
+    const budget = createBudgetController();
+    budget.reserve
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+      })
+      .mockResolvedValueOnce({
+        allowed: true,
+        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
+      });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('groq');
+    }
+    expect(budget.reserve).toHaveBeenCalledTimes(2);
+    expect(budget.release).toHaveBeenCalledWith('budget-1');
+    expect(budget.confirmReservation).toHaveBeenCalledWith(
+      'budget-2',
+      100,
+      'llama-3.3-70b-versatile'
+    );
+    expect(budget.consumeUnknown).not.toHaveBeenCalled();
+  });
+
+  it('conserva el consumo incierto cuando el fallo ocurre después del envío', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('marca consumo incierto aunque el proveedor no tenga reserva de presupuesto', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.consumptionUnknown).toBe(true);
+    }
+  });
+
+  it('conserva el consumo incierto en errores no recuperables posteriores al envío', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    mockGeminiGenerate.mockRejectedValue(
+      new AIProviderError({
+        kind: 'SECURITY_BLOCK',
+        provider: 'gemini',
+        message: 'Blocked',
+      })
+    );
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(budget.consumeUnknown).toHaveBeenCalled();
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('falla cerrado y no hace fallback si no puede liberar la reserva pre-envío', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+
+    const budget = createBudgetController();
+    budget.release.mockRejectedValue(new Error('database unavailable'));
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.compensationFailed).toBe(true);
+      expect(result.consumptionUnknown).toBe(true);
+    }
+    expect(mockGroqGenerate).not.toHaveBeenCalled();
   });
 });

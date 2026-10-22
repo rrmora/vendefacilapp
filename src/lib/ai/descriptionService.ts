@@ -78,6 +78,19 @@ function errorResponse(
   };
 }
 
+function quotaReleaseSucceeded(
+  result: Awaited<ReturnType<typeof releaseQuota>>
+): boolean {
+  if (result.status === 'released') {
+    return true;
+  }
+
+  return (
+    result.status === 'already_processed' &&
+    (result.previousStatus === 'released' || result.previousStatus === 'expired')
+  );
+}
+
 export interface GenerateDescriptionResult {
   response: IDescriptionResponse;
   status: number;
@@ -275,7 +288,20 @@ export async function generateDescription(
       });
     },
     release: async (reservationId) => {
-      await releaseBudget(reservationId);
+      const result = await releaseBudget(reservationId);
+
+      if (result.status === 'released') {
+        return;
+      }
+
+      if (
+        result.status === 'already_processed' &&
+        result.previousStatus === 'released'
+      ) {
+        return;
+      }
+
+      throw new BudgetServiceError('No se pudo confirmar la liberación de presupuesto.');
     },
   };
 
@@ -388,14 +414,30 @@ export async function generateDescription(
 
     if (quotaReservationId && !outcome.consumptionUnknown) {
       try {
-        await releaseQuota(quotaReservationId);
+        const releaseResult = await releaseQuota(quotaReservationId);
+        if (!quotaReleaseSucceeded(releaseResult)) {
+          return {
+            response: errorResponse(
+              'INTERNAL_ERROR',
+              'La generación con IA no está disponible todavía.'
+            ),
+            status: 503,
+          };
+        }
       } catch {
-        // Fail-closed: conservar la reserva si no se puede liberar.
+        return {
+          response: errorResponse(
+            'INTERNAL_ERROR',
+            'La generación con IA no está disponible todavía.'
+          ),
+          status: 503,
+        };
       }
     }
 
     let status = 500;
-    if (outcome.errorCode === 'RATE_LIMITED') status = 429;
+    if (outcome.compensationFailed) status = 503;
+    else if (outcome.errorCode === 'RATE_LIMITED') status = 429;
     else if (outcome.errorCode === 'BUDGET_EXCEEDED') status = 402;
     else if (outcome.errorCode === 'PROVIDER_UNAVAILABLE') status = 503;
     else status = 500;
@@ -415,14 +457,8 @@ export async function generateDescription(
       status,
     };
   } catch (error) {
-    if (quotaReservationId) {
-      try {
-        await releaseQuota(quotaReservationId);
-      } catch {
-        // No se revelan detalles internos.
-      }
-    }
-
+    // Once the orchestration starts, an unexpected throw does not prove that
+    // no provider was dispatched. Keep the quota in its conservative state.
     const isQuotaError = error instanceof QuotaServiceError;
     const isRateError = error instanceof RateLimiterError;
     const isBudgetError = error instanceof BudgetServiceError;

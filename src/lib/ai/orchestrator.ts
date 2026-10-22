@@ -21,6 +21,7 @@ export interface OrchestratorError {
   errorCode: string;
   errorMessage: string;
   consumptionUnknown?: boolean;
+  compensationFailed?: boolean;
 }
 
 export type OrchestratorOutcome = OrchestratorResult | OrchestratorError;
@@ -123,6 +124,7 @@ export async function generateWithFallback(
   const globalTimeoutMs = getAIConfig().globalTimeoutMs;
   let lastError: AIProviderError | null = null;
   let consumptionUnknown = false;
+  let compensationFailed = false;
 
   for (const providerInfo of providers) {
     if (context.abortSignal?.aborted) {
@@ -130,6 +132,7 @@ export async function generateWithFallback(
         success: false,
         errorCode: 'INTERNAL_ERROR',
         errorMessage: 'Solicitud cancelada.',
+        consumptionUnknown,
       };
     }
 
@@ -140,6 +143,7 @@ export async function generateWithFallback(
         success: false,
         errorCode: 'PROVIDER_UNAVAILABLE',
         errorMessage: 'Tiempo de espera agotado.',
+        consumptionUnknown,
       };
     }
 
@@ -156,12 +160,14 @@ export async function generateWithFallback(
               success: false,
               errorCode: 'BUDGET_EXCEEDED',
               errorMessage: 'Presupuesto de IA insuficiente.',
+              consumptionUnknown,
             };
           }
           return {
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo verificar el presupuesto.',
+            consumptionUnknown,
           };
         }
 
@@ -203,6 +209,7 @@ export async function generateWithFallback(
             success: false,
             errorCode: 'INTERNAL_ERROR',
             errorMessage: 'No se pudo conciliar el presupuesto.',
+            consumptionUnknown,
           };
         }
       }
@@ -214,13 +221,24 @@ export async function generateWithFallback(
       };
     } catch (error) {
       const durationMs = Date.now() - providerStart;
+      const requestDispatched =
+        error instanceof AIProviderError ? error.requestDispatched : true;
 
-      if (reservationId && budgetController) {
+      if (requestDispatched) {
+        consumptionUnknown = true;
+        if (reservationId && budgetController) {
+          try {
+            await budgetController.consumeUnknown(reservationId, providerInfo.model);
+          } catch {
+            // The reservation remains committed for reconciliation.
+          }
+        }
+      } else if (reservationId && budgetController) {
         try {
-          await budgetController.consumeUnknown(reservationId, providerInfo.model);
-          consumptionUnknown = true;
+          await budgetController.release(reservationId);
         } catch {
-          // Keep the original error if budget reconciliation fails.
+          // Fail closed: without evidence of release, keep quota and budget.
+          compensationFailed = true;
           consumptionUnknown = true;
         }
       }
@@ -235,18 +253,30 @@ export async function generateWithFallback(
           budgetReservationId: reservationId ?? undefined,
         });
 
+        if (compensationFailed) {
+          return {
+            success: false,
+            errorCode: 'INTERNAL_ERROR',
+            errorMessage: 'No se pudo liberar la reserva de presupuesto.',
+            consumptionUnknown,
+            compensationFailed,
+          };
+        }
+
         if (!isRecoverableKind(error.kind)) {
           if (error.kind === 'BUDGET_EXCEEDED') {
             return {
               success: false,
               errorCode: 'BUDGET_EXCEEDED',
               errorMessage: 'Cuota del proveedor agotada.',
+              consumptionUnknown,
             };
           }
           return {
             success: false,
             errorCode: toPublicErrorCode(error.kind),
             errorMessage: 'No se pudo generar la descripción.',
+            consumptionUnknown,
           };
         }
 
@@ -260,6 +290,17 @@ export async function generateWithFallback(
           errorKind: 'UNKNOWN',
           budgetReservationId: reservationId ?? undefined,
         });
+
+        if (compensationFailed) {
+          return {
+            success: false,
+            errorCode: 'INTERNAL_ERROR',
+            errorMessage: 'No se pudo liberar la reserva de presupuesto.',
+            consumptionUnknown,
+            compensationFailed,
+          };
+        }
+
         lastError = new AIProviderError({
           kind: 'PROVIDER_ERROR',
           provider: providerInfo.name as 'gemini',
