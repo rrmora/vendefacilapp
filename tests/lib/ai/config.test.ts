@@ -156,6 +156,7 @@ describe('getEnabledProviders', () => {
 
   it('devuelve proveedores habilitados ordenados por prioridad', () => {
     process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
     process.env.AI_OPENAI_PRIORITY = '1';
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_PRIORITY = '2';
@@ -174,5 +175,63 @@ describe('getEnabledProviders', () => {
     process.env.AI_GROQ_API_KEY = 'groq-key';
 
     expect(getEnabledProviders().map((p) => p.name)).toEqual(['groq']);
+  });
+});
+
+describe('T-005.1 política de proveedores gratuitos y de pago', () => {
+  it('clasifica Gemini y Groq como gratuitos para presupuesto', () => {
+    const providers = getAIConfig().providers;
+
+    expect(providers.find((p) => p.name === 'gemini')?.isPaid).toBe(false);
+    expect(providers.find((p) => p.name === 'groq')?.isPaid).toBe(false);
+  });
+
+  it('clasifica OpenAI como proveedor de pago', () => {
+    const openai = getAIConfig().providers.find((p) => p.name === 'openai');
+
+    expect(openai?.isPaid).toBe(true);
+  });
+
+  it('mantiene OpenAI deshabilitado con API key si falta AI_OPENAI_ENABLED', () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+
+    const openai = getAIConfig().providers.find((p) => p.name === 'openai');
+
+    expect(openai?.enabled).toBe(false);
+  });
+
+  it('habilita OpenAI con API key y AI_OPENAI_ENABLED=true', () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    const openai = getAIConfig().providers.find((p) => p.name === 'openai');
+
+    expect(openai?.enabled).toBe(true);
+  });
+
+  it('mantiene OpenAI deshabilitado con AI_OPENAI_ENABLED=false', () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'false';
+
+    const openai = getAIConfig().providers.find((p) => p.name === 'openai');
+
+    expect(openai?.enabled).toBe(false);
+  });
+
+  it('conserva el orden predeterminado Gemini, Groq, OpenAI', () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    expect(getEnabledProviders().map((p) => p.name)).toEqual([
+      'gemini',
+      'groq',
+      'openai',
+    ]);
   });
 });

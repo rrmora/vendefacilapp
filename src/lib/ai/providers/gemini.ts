@@ -93,7 +93,7 @@ function extractTokens(response: GeminiResponse): number | null {
 
 export class GeminiProvider implements IAIProvider {
   readonly name = 'gemini' as const;
-  readonly isPaid = true;
+  readonly isPaid = false;
 
   private readonly apiKey: string;
   private readonly model: string;

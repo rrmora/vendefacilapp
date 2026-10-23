@@ -39,11 +39,11 @@ describe('GeminiProvider', () => {
     vi.unstubAllGlobals();
   });
 
-  it('implementa IAIProvider con nombre gemini y isPaid=true', () => {
+  it('implementa IAIProvider con nombre gemini y isPaid=false', () => {
     const provider = new GeminiProvider('test-key', 'gemini-2.5-flash');
 
     expect(provider.name).toBe('gemini');
-    expect(provider.isPaid).toBe(true);
+    expect(provider.isPaid).toBe(false);
   });
 
   it('genera descripción exitosamente y normaliza la respuesta', async () => {

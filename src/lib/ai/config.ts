@@ -60,17 +60,18 @@ function getApiKey(name: AIProviderName): string | null {
 function isProviderEnabled(name: AIProviderName, apiKey: string | null): boolean {
   const envKey = `AI_${name.toUpperCase()}_ENABLED`;
   const explicit = process.env[envKey];
+
+  if (name === 'openai') {
+    return explicit !== undefined && parseBoolean(explicit, false) && apiKey !== null;
+  }
+
   if (explicit !== undefined) {
     return parseBoolean(explicit, false);
   }
   return apiKey !== null;
 }
 
-const PAID_PROVIDERS: ReadonlySet<AIProviderName> = new Set([
-  'gemini',
-  'groq',
-  'openai',
-]);
+const PAID_PROVIDERS: ReadonlySet<AIProviderName> = new Set(['openai']);
 
 function buildProviderConfig(name: AIProviderName): AIProviderConfig {
   const apiKey = getApiKey(name);

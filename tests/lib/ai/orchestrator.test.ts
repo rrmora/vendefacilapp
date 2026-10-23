@@ -199,8 +199,8 @@ describe('generateWithFallback', () => {
   });
 
   it('bloquea proveedores de pago por defecto', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: false,
@@ -210,7 +210,7 @@ describe('generateWithFallback', () => {
     if (!result.success) {
       expect(result.errorCode).toBe('INTERNAL_ERROR');
     }
-    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
   });
 
   it('devuelve PROVIDER_UNAVAILABLE cuando todos los proveedores fallan', async () => {
@@ -377,10 +377,10 @@ describe('generateWithFallback', () => {
     expect(typeof attempts[0]!.durationMs).toBe('number');
   });
 
-  it('libera la reserva cuando el proveedor falla antes de enviar', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+  it('libera la reserva cuando el proveedor de pago falla antes de enviar', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    mockOpenAIGenerate.mockRejectedValue(createPreSendError('openai'));
 
     const budget = createBudgetController();
 
@@ -400,25 +400,22 @@ describe('generateWithFallback', () => {
     expect(budget.confirmReservation).not.toHaveBeenCalled();
   });
 
-  it('libera la primera reserva y conserva el consumo del fallback exitoso', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+  it('libera la reserva del proveedor de pago y conserva el fallback gratuito exitoso', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
     process.env.AI_GROQ_API_KEY = 'groq-key';
     process.env.AI_GROQ_ENABLED = 'true';
+    process.env.AI_GROQ_PRIORITY = '2';
 
-    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+    mockOpenAIGenerate.mockRejectedValue(createPreSendError('openai'));
     mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
 
     const budget = createBudgetController();
-    budget.reserve
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
-      })
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
-      });
+    budget.reserve.mockResolvedValueOnce({
+      allowed: true,
+      reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+    });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -429,20 +426,17 @@ describe('generateWithFallback', () => {
     if (result.success) {
       expect(result.providerName).toBe('groq');
     }
-    expect(budget.reserve).toHaveBeenCalledTimes(2);
+    expect(budget.reserve).toHaveBeenCalledTimes(1);
+    expect(budget.reserve).toHaveBeenCalledWith('openai', 'gpt-4o-mini');
     expect(budget.release).toHaveBeenCalledWith('budget-1');
-    expect(budget.confirmReservation).toHaveBeenCalledWith(
-      'budget-2',
-      100,
-      'llama-3.3-70b-versatile'
-    );
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
     expect(budget.consumeUnknown).not.toHaveBeenCalled();
   });
 
   it('conserva el consumo incierto cuando el fallo ocurre después del envío', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    mockOpenAIGenerate.mockRejectedValue(createRecoverableError('openai'));
 
     const budget = createBudgetController();
 
@@ -456,29 +450,26 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
-    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gpt-4o-mini');
     expect(budget.release).not.toHaveBeenCalled();
   });
 
-  it('conserva el consumo incierto si el fallback falla antes de enviar', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+  it('conserva el consumo incierto del proveedor de pago si el fallback gratuito falla antes de enviar', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
     process.env.AI_GROQ_API_KEY = 'groq-key';
     process.env.AI_GROQ_ENABLED = 'true';
+    process.env.AI_GROQ_PRIORITY = '2';
 
-    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    mockOpenAIGenerate.mockRejectedValue(createRecoverableError('openai'));
     mockGroqGenerate.mockRejectedValue(createPreSendError('groq'));
 
     const budget = createBudgetController();
-    budget.reserve
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
-      })
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
-      });
+    budget.reserve.mockResolvedValueOnce({
+      allowed: true,
+      reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+    });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -491,18 +482,16 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
-    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockOpenAIGenerate).toHaveBeenCalledTimes(1);
     expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
-    expect(mockGeminiGenerate.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockOpenAIGenerate.mock.invocationCallOrder[0]).toBeLessThan(
       mockGroqGenerate.mock.invocationCallOrder[0]!
     );
-    expect(budget.reserve).toHaveBeenNthCalledWith(1, 'gemini', 'gemini-2.5-flash');
-    expect(budget.reserve).toHaveBeenNthCalledWith(2, 'groq', 'llama-3.3-70b-versatile');
+    expect(budget.reserve).toHaveBeenCalledTimes(1);
+    expect(budget.reserve).toHaveBeenCalledWith('openai', 'gpt-4o-mini');
     expect(budget.consumeUnknown).toHaveBeenCalledTimes(1);
-    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
-    expect(budget.release).toHaveBeenCalledTimes(1);
-    expect(budget.release).toHaveBeenCalledWith('budget-2');
-    expect(budget.release).not.toHaveBeenCalledWith('budget-1');
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gpt-4o-mini');
+    expect(budget.release).not.toHaveBeenCalled();
     expect(budget.confirmReservation).not.toHaveBeenCalled();
   });
 
@@ -523,12 +512,12 @@ describe('generateWithFallback', () => {
   });
 
   it('conserva el consumo incierto en errores no recuperables posteriores al envío', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockRejectedValue(
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    mockOpenAIGenerate.mockRejectedValue(
       new AIProviderError({
         kind: 'SECURITY_BLOCK',
-        provider: 'gemini',
+        provider: 'openai',
         message: 'Blocked',
       })
     );
@@ -545,17 +534,19 @@ describe('generateWithFallback', () => {
       expect(result.errorCode).toBe('INTERNAL_ERROR');
       expect(result.consumptionUnknown).toBe(true);
     }
-    expect(budget.consumeUnknown).toHaveBeenCalled();
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gpt-4o-mini');
     expect(budget.release).not.toHaveBeenCalled();
   });
 
   it('falla cerrado y no hace fallback si no puede liberar la reserva pre-envío', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
     process.env.AI_GROQ_API_KEY = 'groq-key';
     process.env.AI_GROQ_ENABLED = 'true';
+    process.env.AI_GROQ_PRIORITY = '2';
 
-    mockGeminiGenerate.mockRejectedValue(createPreSendError('gemini'));
+    mockOpenAIGenerate.mockRejectedValue(createPreSendError('openai'));
 
     const budget = createBudgetController();
     budget.release.mockRejectedValue(new Error('database unavailable'));
@@ -572,12 +563,13 @@ describe('generateWithFallback', () => {
       expect(result.compensationFailed).toBe(true);
       expect(result.consumptionUnknown).toBe(true);
     }
+    expect(budget.release).toHaveBeenCalledWith('budget-1');
     expect(mockGroqGenerate).not.toHaveBeenCalled();
   });
 
   it('marca release cuando el presupuesto se rechaza antes de llamar al proveedor', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
 
     const budget = createBudgetController();
     budget.reserve.mockResolvedValue({
@@ -595,14 +587,14 @@ describe('generateWithFallback', () => {
       expect(result.errorCode).toBe('BUDGET_EXCEEDED');
       expect(result.quotaDisposition).toBe('release');
     }
-    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
     expect(budget.release).not.toHaveBeenCalled();
   });
 
   it('clasifica como complete una excepción desconocida del proveedor', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockRejectedValue(new Error('socket hang up'));
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    mockOpenAIGenerate.mockRejectedValue(new Error('socket hang up'));
 
     const budget = createBudgetController();
 
@@ -616,13 +608,13 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
-    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gpt-4o-mini');
     expect(budget.release).not.toHaveBeenCalled();
   });
 
   it('no clasifica como dispatch una excepción al reservar presupuesto', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
 
     const budget = createBudgetController();
     budget.reserve.mockRejectedValue(new Error('budget database unavailable'));
@@ -637,14 +629,14 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('release');
       expect(result.consumptionUnknown).toBe(false);
     }
-    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
     expect(budget.release).not.toHaveBeenCalled();
   });
 
   it('mantiene complete si falla la confirmación de presupuesto tras el envío', async () => {
-    process.env.AI_GEMINI_API_KEY = 'gemini-key';
-    process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    mockOpenAIGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
 
     const budget = createBudgetController();
     budget.confirmReservation.mockRejectedValue(
@@ -662,29 +654,26 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('complete');
       expect(result.consumptionUnknown).toBe(true);
     }
-    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gemini-2.5-flash');
+    expect(budget.consumeUnknown).toHaveBeenCalledWith('budget-1', 'gpt-4o-mini');
     expect(budget.release).not.toHaveBeenCalled();
   });
 
-  it('mantiene complete si falla la compensación del fallback tras un envío', async () => {
+  it('mantiene complete si falla la compensación del fallback de pago tras un envío', async () => {
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_ENABLED = 'true';
-    process.env.AI_GROQ_API_KEY = 'groq-key';
-    process.env.AI_GROQ_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '1';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '2';
 
     mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
-    mockGroqGenerate.mockRejectedValue(createPreSendError('groq'));
+    mockOpenAIGenerate.mockRejectedValue(createPreSendError('openai'));
 
     const budget = createBudgetController();
-    budget.reserve
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
-      })
-      .mockResolvedValueOnce({
-        allowed: true,
-        reservation: { reservationId: 'budget-2', maxCostUsd: 0.001843 },
-      });
+    budget.reserve.mockResolvedValueOnce({
+      allowed: true,
+      reservation: { reservationId: 'budget-1', maxCostUsd: 0.001843 },
+    });
     budget.release.mockRejectedValue(new Error('budget database unavailable'));
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -697,6 +686,332 @@ describe('generateWithFallback', () => {
       expect(result.quotaDisposition).toBe('complete');
       expect(result.compensationFailed).toBe(true);
     }
-    expect(budget.release).toHaveBeenCalledWith('budget-2');
+    expect(budget.release).toHaveBeenCalledWith('budget-1');
+  });
+});
+
+describe('T-005.1 política de proveedores gratuitos y de pago', () => {
+  it('vuelve a evaluar Gemini en una nueva solicitud después de una falla recuperable', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValueOnce(createRecoverableError('gemini'));
+    mockGroqGenerate.mockResolvedValueOnce({
+      text: 'Descripción de Groq',
+      tokensUsed: 100,
+    });
+
+    const first = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(first.success).toBe(true);
+    if (first.success) {
+      expect(first.providerName).toBe('groq');
+    }
+
+    mockGeminiGenerate.mockResolvedValueOnce({
+      text: 'Descripción de Gemini',
+      tokensUsed: 100,
+    });
+
+    const second = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(second.success).toBe(true);
+    if (second.success) {
+      expect(second.providerName).toBe('gemini');
+    }
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(2);
+    expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('no reserva presupuesto para un proveedor gratuito', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+
+    mockGeminiGenerate.mockResolvedValue({
+      text: 'Descripción de Gemini',
+      tokensUsed: 100,
+    });
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('gemini');
+    }
+    expect(budget.reserve).not.toHaveBeenCalled();
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
+  });
+
+  it('hace fallback entre proveedores gratuitos sin reservar presupuesto', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    mockGroqGenerate.mockResolvedValue({
+      text: 'Descripción de Groq',
+      tokensUsed: 100,
+    });
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('groq');
+    }
+    expect(budget.reserve).not.toHaveBeenCalled();
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
+  });
+
+  it('continúa con un proveedor gratuito cuando el presupuesto de pago está agotado', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
+
+    mockGeminiGenerate.mockResolvedValue({
+      text: 'Descripción de Gemini',
+      tokensUsed: 100,
+    });
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'budget_exceeded',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('gemini');
+    }
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+    expect(budget.reserve).toHaveBeenCalledTimes(1);
+    expect(budget.reserve).toHaveBeenCalledWith('openai', 'gpt-4o-mini');
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('devuelve BUDGET_EXCEEDED si todos los gratuitos fallan de forma recuperable', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+    process.env.AI_GROQ_PRIORITY = '3';
+
+    mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
+    mockGroqGenerate.mockRejectedValue(createRecoverableError('groq'));
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'budget_exceeded',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('BUDGET_EXCEEDED');
+    }
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+    expect(budget.reserve).toHaveBeenCalledTimes(1);
+    expect(budget.confirmReservation).not.toHaveBeenCalled();
+  });
+
+  it('no hace fallback ante BUDGET_EXCEEDED devuelto por OpenAI', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+
+    mockOpenAIGenerate.mockRejectedValue(
+      new AIProviderError({
+        kind: 'BUDGET_EXCEEDED',
+        provider: 'openai',
+        message: 'Provider quota exceeded',
+      })
+    );
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('BUDGET_EXCEEDED');
+    }
+    expect(mockOpenAIGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+  });
+
+  it('mantiene budget_unavailable como error interno sin probar proveedores', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'budget_unavailable',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+    }
+    expect(budget.reserve).toHaveBeenCalledTimes(1);
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+  });
+
+  it('bloquea OpenAI cuando el presupuesto está agotado', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    mockOpenAIGenerate.mockResolvedValue({
+      text: 'Descripción de OpenAI',
+      tokensUsed: 100,
+    });
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'budget_exceeded',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('BUDGET_EXCEEDED');
+      expect(result.quotaDisposition).toBe('release');
+    }
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+    expect(budget.reserve).toHaveBeenCalledWith('openai', 'gpt-4o-mini');
+  });
+
+  it('no habilita OpenAI con API key si falta AI_OPENAI_ENABLED aunque allowPaidProviders sea true', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+
+    mockOpenAIGenerate.mockResolvedValue({
+      text: 'Descripción de OpenAI',
+      tokensUsed: 100,
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+    }
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+  });
+
+  it('permite OpenAI con AI_OPENAI_ENABLED=true y allowPaidProviders=true', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    mockOpenAIGenerate.mockResolvedValue({
+      text: 'Descripción de OpenAI',
+      tokensUsed: 100,
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('openai');
+    }
+  });
+
+  it('usa un proveedor gratuito aunque allowPaidProviders sea false', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+
+    mockGeminiGenerate.mockResolvedValue({
+      text: 'Descripción de Gemini',
+      tokensUsed: 100,
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: false,
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('gemini');
+    }
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it('excluye OpenAI cuando allowPaidProviders es false aunque esté habilitado', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    mockOpenAIGenerate.mockResolvedValue({
+      text: 'Descripción de OpenAI',
+      tokensUsed: 100,
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: false,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+    }
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
   });
 });

@@ -91,7 +91,7 @@ function extractTokens(response: GroqResponse): number | null {
 
 export class GroqProvider implements IAIProvider {
   readonly name = 'groq' as const;
-  readonly isPaid = true;
+  readonly isPaid = false;
 
   private readonly apiKey: string;
   private readonly model: string;

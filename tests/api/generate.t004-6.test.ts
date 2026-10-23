@@ -156,8 +156,13 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
 const ENV_KEYS = [
   'AI_ENABLED',
   'AI_GEMINI_API_KEY',
+  'AI_GEMINI_ENABLED',
+  'AI_GEMINI_PRIORITY',
   'AI_GROQ_API_KEY',
   'AI_GROQ_ENABLED',
+  'AI_OPENAI_API_KEY',
+  'AI_OPENAI_ENABLED',
+  'AI_OPENAI_PRIORITY',
   'TRUST_PROXY',
   'AI_GEMINI_MODEL',
   'AI_GEMINI_TIMEOUT_MS',
@@ -166,7 +171,8 @@ const ENV_KEYS = [
 
 function setupRealEnv() {
   process.env.AI_ENABLED = 'true';
-  process.env.AI_GEMINI_API_KEY = 'test-key';
+  process.env.AI_OPENAI_API_KEY = 'test-key';
+  process.env.AI_OPENAI_ENABLED = 'true';
   process.env.TRUST_PROXY = 'true';
 }
 
@@ -174,11 +180,11 @@ describe('POST /api/generate T-004-6 protections', () => {
   const fetchMock = vi.fn(async () =>
     new Response(
       JSON.stringify({
-        candidates: [{ content: { parts: [{ text: 'Descripción generada' }] } }],
-        usageMetadata: {
-          promptTokenCount: 100,
-          candidatesTokenCount: 50,
-          totalTokenCount: 150,
+        choices: [{ message: { content: 'Descripción generada' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
         },
       }),
       { status: 200, headers: { 'content-type': 'application/json' } }
@@ -348,6 +354,60 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('G2: presupuesto agotado con OpenAI continúa con Gemini gratuito', async () => {
+    setupRealEnv();
+    process.env.AI_OPENAI_PRIORITY = '1';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+
+    const client = createMockClient({
+      budgetResult: {
+        status: 'budget_exceeded',
+        month: '2026-10',
+        spent_usd: 4.76,
+        reserved_usd: 0,
+        total_budget_usd: 5,
+        available_usd: 0,
+      },
+    });
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'Descripción de Gemini' }] } }],
+          usageMetadata: {
+            promptTokenCount: 100,
+            candidatesTokenCount: 50,
+            totalTokenCount: 150,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    );
+
+    const response = await POST(
+      buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
+    );
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(data.generatedText).toBe('Descripción de Gemini');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const fetchCalls = fetchMock.mock.calls as unknown as Array<[string]>;
+    expect(fetchCalls[0]?.[0]).toContain('generativelanguage.googleapis.com');
+
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    const rpcNames = rpc.mock.calls.map((call) => call[0] as string);
+    expect(rpcNames.filter((name) => name === 'reserve_budget')).toHaveLength(1);
+    expect(rpcNames.filter((name) => name === 'confirm_budget')).toHaveLength(0);
+    expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());
+    expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
+  });
+
   it('H: éxito confirma cuota y presupuesto', async () => {
     setupRealEnv();
     const client = createMockClient();
@@ -372,7 +432,7 @@ describe('POST /api/generate T-004-6 protections', () => {
 
   it('I: HTTP 500 post-envío confirma cuota y presupuesto incierto', async () => {
     setupRealEnv();
-    process.env.AI_GEMINI_API_KEY = 'test-key';
+    process.env.AI_OPENAI_API_KEY = 'test-key';
     const client = createMockClient();
     setSupabaseClient(client);
     authorizeRealCalls();
@@ -402,7 +462,7 @@ describe('POST /api/generate T-004-6 protections', () => {
 
   it('J: timeout posterior al envío confirma cuota y presupuesto', async () => {
     setupRealEnv();
-    process.env.AI_GEMINI_API_KEY = 'test-key';
+    process.env.AI_OPENAI_API_KEY = 'test-key';
 
     const client = createMockClient();
     setSupabaseClient(client);
@@ -463,7 +523,7 @@ describe('POST /api/generate T-004-6 protections', () => {
 
   it('P: no se puede marcar la cuota como enviada => fail-closed sin llamar al proveedor', async () => {
     setupRealEnv();
-    process.env.AI_GEMINI_API_KEY = 'test-key';
+    process.env.AI_OPENAI_API_KEY = 'test-key';
     const client = createMockClient({ markQuotaSentError: true });
     setSupabaseClient(client);
     authorizeRealCalls();
@@ -564,27 +624,20 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('T: fallback post-envío a pre-envío confirma cuota y conserva presupuesto incierto', async () => {
+  it('T: abort post-envío confirma cuota y conserva presupuesto incierto', async () => {
     setupRealEnv();
-    process.env.AI_GROQ_API_KEY = 'test-groq-key';
-    process.env.AI_GROQ_ENABLED = 'true';
 
     const abortController = new AbortController();
-    let reserveCount = 0;
-    const client = createMockClient({
-      onReserveBudget: () => {
-        reserveCount += 1;
-        if (reserveCount === 2) {
-          abortController.abort();
-        }
-      },
-    });
+    const client = createMockClient();
     setSupabaseClient(client);
     authorizeRealCalls();
 
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
-    fetchMock.mockRejectedValueOnce(abortError);
+    fetchMock.mockImplementationOnce(async () => {
+      abortController.abort();
+      throw abortError;
+    });
 
     const response = await POST(
       buildRequest(
@@ -602,9 +655,9 @@ describe('POST /api/generate T-004-6 protections', () => {
 
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
     const rpcNames = rpc.mock.calls.map((call) => call[0] as string);
-    expect(rpcNames.filter((name) => name === 'reserve_budget')).toHaveLength(2);
+    expect(rpcNames.filter((name) => name === 'reserve_budget')).toHaveLength(1);
     expect(rpcNames.filter((name) => name === 'confirm_budget')).toHaveLength(1);
-    expect(rpcNames.filter((name) => name === 'release_budget')).toHaveLength(1);
+    expect(rpcNames.filter((name) => name === 'release_budget')).toHaveLength(0);
     expect(rpc).toHaveBeenCalledWith('mark_quota_sent', expect.anything());
     expect(rpc).not.toHaveBeenCalledWith('release_quota', expect.anything());
     expect(rpc).toHaveBeenCalledWith('confirm_quota', expect.anything());

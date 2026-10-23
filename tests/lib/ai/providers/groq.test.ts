@@ -39,11 +39,11 @@ describe('GroqProvider', () => {
     vi.unstubAllGlobals();
   });
 
-  it('implementa IAIProvider con nombre groq y isPaid=true', () => {
+  it('implementa IAIProvider con nombre groq y isPaid=false', () => {
     const provider = new GroqProvider('test-key', 'llama-3.3-70b-versatile');
 
     expect(provider.name).toBe('groq');
-    expect(provider.isPaid).toBe(true);
+    expect(provider.isPaid).toBe(false);
   });
 
   it('genera descripción exitosamente y normaliza la respuesta', async () => {

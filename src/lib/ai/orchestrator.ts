@@ -142,6 +142,7 @@ export async function generateWithFallback(
   let consumptionUnknown = false;
   let compensationFailed = false;
   let anyRequestDispatched = false;
+  let paidBudgetExhausted = false;
 
   for (const providerInfo of providers) {
     if (context.abortSignal?.aborted) {
@@ -172,6 +173,10 @@ export async function generateWithFallback(
       };
     }
 
+    if (paidBudgetExhausted && providerInfo.isPaid) {
+      continue;
+    }
+
     const providerStart = Date.now();
     const provider = providerInfo.create();
     let reservationId: string | null = null;
@@ -182,16 +187,8 @@ export async function generateWithFallback(
         const budget = await budgetController.reserve(providerInfo.name, providerInfo.model);
         if (!budget.allowed) {
           if (budget.reason === 'budget_exceeded') {
-            return {
-              success: false,
-              errorCode: 'BUDGET_EXCEEDED',
-              errorMessage: 'Presupuesto de IA insuficiente.',
-              quotaDisposition: resolveQuotaDisposition(
-                anyRequestDispatched,
-                compensationFailed
-              ),
-              consumptionUnknown,
-            };
+            paidBudgetExhausted = true;
+            continue;
           }
           return {
             success: false,
@@ -367,6 +364,19 @@ export async function generateWithFallback(
         });
       }
     }
+  }
+
+  if (paidBudgetExhausted) {
+    return {
+      success: false,
+      errorCode: 'BUDGET_EXCEEDED',
+      errorMessage: 'Presupuesto de IA insuficiente.',
+      quotaDisposition: resolveQuotaDisposition(
+        anyRequestDispatched,
+        compensationFailed
+      ),
+      consumptionUnknown,
+    };
   }
 
   if (lastError) {
