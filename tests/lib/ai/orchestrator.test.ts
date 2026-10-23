@@ -1015,3 +1015,88 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
     expect(mockOpenAIGenerate).not.toHaveBeenCalled();
   });
 });
+
+describe('T-005.4 recuperación de proveedores entre solicitudes', () => {
+  it('hace fallback a Groq cuando Gemini falla de forma recuperable', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    const attempts: string[] = [];
+
+    mockGeminiGenerate.mockRejectedValueOnce(createRecoverableError('gemini'));
+    mockGroqGenerate.mockResolvedValueOnce({
+      text: 'Descripción de Groq',
+      tokensUsed: 100,
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      onProviderAttempt: ({ provider }) => attempts.push(provider),
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.providerName).toBe('groq');
+    }
+    expect(attempts).toEqual(['gemini', 'groq']);
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGeminiGenerate.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGroqGenerate.mock.invocationCallOrder[0]!
+    );
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+  });
+
+  it('reintenta Gemini en la siguiente solicitud y no invoca Groq al recuperarse', async () => {
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GROQ_API_KEY = 'groq-key';
+    process.env.AI_GROQ_ENABLED = 'true';
+
+    const firstAttempts: string[] = [];
+    const secondAttempts: string[] = [];
+
+    mockGeminiGenerate
+      .mockRejectedValueOnce(createRecoverableError('gemini'))
+      .mockResolvedValueOnce({
+        text: 'Descripción de Gemini',
+        tokensUsed: 100,
+      });
+    mockGroqGenerate.mockResolvedValueOnce({
+      text: 'Descripción de Groq',
+      tokensUsed: 100,
+    });
+
+    const first = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      onProviderAttempt: ({ provider }) => firstAttempts.push(provider),
+    });
+
+    expect(first.success).toBe(true);
+    if (first.success) {
+      expect(first.providerName).toBe('groq');
+    }
+    expect(firstAttempts).toEqual(['gemini', 'groq']);
+    expect(mockGeminiGenerate).toHaveBeenCalledTimes(1);
+    expect(mockGroqGenerate).toHaveBeenCalledTimes(1);
+
+    const geminiCallsAfterFirst = mockGeminiGenerate.mock.calls.length;
+    const groqCallsAfterFirst = mockGroqGenerate.mock.calls.length;
+
+    const second = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      onProviderAttempt: ({ provider }) => secondAttempts.push(provider),
+    });
+
+    expect(second.success).toBe(true);
+    if (second.success) {
+      expect(second.providerName).toBe('gemini');
+    }
+    expect(secondAttempts).toEqual(['gemini']);
+    expect(mockGeminiGenerate.mock.calls.length).toBe(geminiCallsAfterFirst + 1);
+    expect(mockGroqGenerate.mock.calls.length).toBe(groqCallsAfterFirst);
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+  });
+});
