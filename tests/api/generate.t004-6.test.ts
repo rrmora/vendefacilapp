@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST } from '../../src/app/api/generate/route';
 import {
   authorizeRealCalls,
+  restoreRealCallsEnv,
   revokeRealCallsAuthorization,
-} from '../../src/lib/ai/descriptionService';
+} from '../helpers/aiRealCalls';
 import { resetAIConfigCache } from '../../src/lib/ai/config';
 import { setSupabaseClient, resetSupabaseClient } from '../../src/lib/db/supabaseClient';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -155,6 +156,7 @@ function createMockClient(mode: MockMode = {}): SupabaseClient {
 
 const ENV_KEYS = [
   'AI_ENABLED',
+  'AI_REAL_CALLS_ENABLED',
   'AI_GEMINI_API_KEY',
   'AI_GEMINI_ENABLED',
   'AI_GEMINI_PRIORITY',
@@ -217,8 +219,7 @@ describe('POST /api/generate T-004-6 protections', () => {
         process.env[key] = value;
       }
     }
-    revokeRealCallsAuthorization();
-    resetAIConfigCache();
+    restoreRealCallsEnv(originalEnv.AI_REAL_CALLS_ENABLED);
     resetSupabaseClient();
     vi.unstubAllGlobals();
   });
@@ -253,7 +254,7 @@ describe('POST /api/generate T-004-6 protections', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('C: realCallsAuthorized=false responde 503 sin consumo', async () => {
+  it('C: sin AI_REAL_CALLS_ENABLED responde 503 sin consumo', async () => {
     setupRealEnv();
     const client = createMockClient();
     setSupabaseClient(client);
@@ -262,6 +263,35 @@ describe('POST /api/generate T-004-6 protections', () => {
     const response = await POST(
       buildRequest(validBody, { 'x-real-ip': '192.0.2.10' })
     );
+
+    expect(response.status).toBe(503);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('C2: sin proveedor elegible responde 503 antes de cuota y presupuesto', async () => {
+    process.env.AI_ENABLED = 'true';
+    const client = createMockClient();
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(buildRequest(validBody));
+
+    expect(response.status).toBe(503);
+    const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    expect(rpc).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('C3: OpenAI sin AI_OPENAI_ENABLED no es elegible', async () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_OPENAI_API_KEY = 'test-key';
+    const client = createMockClient();
+    setSupabaseClient(client);
+    authorizeRealCalls();
+
+    const response = await POST(buildRequest(validBody));
 
     expect(response.status).toBe(503);
     const rpc = (client as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;

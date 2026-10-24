@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from '../../src/app/api/generate/route';
 import {
   areRealCallsAuthorized,
+  restoreRealCallsEnv,
   revokeRealCallsAuthorization,
-} from '../../src/lib/ai/descriptionService';
+} from '../helpers/aiRealCalls';
 import { resetAIConfigCache } from '../../src/lib/ai/config';
 
 const validBody = {
@@ -13,7 +14,7 @@ const validBody = {
   userNotes: 'iPhone 13 de 128 GB, batería al 85%, incluye cargador',
 };
 
-const ENV_KEYS = ['AI_ENABLED'] as const;
+const ENV_KEYS = ['AI_ENABLED', 'AI_REAL_CALLS_ENABLED'] as const;
 const originalEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -34,8 +35,8 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
-  resetAIConfigCache();
-  revokeRealCallsAuthorization();
+  restoreRealCallsEnv(originalEnv.AI_REAL_CALLS_ENABLED);
+  vi.unstubAllGlobals();
 });
 
 function buildRequest(body: unknown): Request {
@@ -198,9 +199,28 @@ describe('POST /api/generate — Integración AIOrchestrator', () => {
     expect(data.tokensUsed).toBeNull();
   });
 
+  it('AI_ENABLED=false mantiene MOCK aunque AI_REAL_CALLS_ENABLED=true', async () => {
+    process.env.AI_REAL_CALLS_ENABLED = 'true';
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const response = await POST(buildRequest(validBody));
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.success).toBe(true);
+    expect(data.generatedText).toContain('[MOCK]');
+    expect(data.tokensUsed).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('AI_ENABLED=true sin autorización de ejecución real devuelve error controlado', async () => {
     process.env.AI_ENABLED = 'true';
     expect(areRealCallsAuthorized()).toBe(false);
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
 
     const response = await POST(buildRequest(validBody));
 
@@ -212,10 +232,14 @@ describe('POST /api/generate — Integración AIOrchestrator', () => {
     expect(data.errorCode).toBe('INTERNAL_ERROR');
     expect(data.generatedText).toBe('');
     expect(data.tokensUsed).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('no permite activar llamadas externas solo con variables de entorno', async () => {
+  it('AI_ENABLED=true sin AI_REAL_CALLS_ENABLED no habilita llamadas externas', async () => {
     process.env.AI_ENABLED = 'true';
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
 
     const response = await POST(buildRequest(validBody));
 
@@ -223,6 +247,34 @@ describe('POST /api/generate — Integración AIOrchestrator', () => {
 
     const data = await response.json();
     expect(data.success).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('ambas variables activas sin proveedor elegible devuelven 503 sin fetch', async () => {
+    process.env.AI_ENABLED = 'true';
+    process.env.AI_REAL_CALLS_ENABLED = 'true';
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const response = await POST(buildRequest(validBody));
+
+    expect(response.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('dos solicitudes sin autorización permanecen bloqueadas', async () => {
+    process.env.AI_ENABLED = 'true';
+
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const first = await POST(buildRequest(validBody));
+    const second = await POST(buildRequest(validBody));
+
+    expect(first.status).toBe(503);
+    expect(second.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('valida solicitudes inválidas antes de ejecutar generación', async () => {
@@ -249,7 +301,9 @@ describe('POST /api/generate — Integración AIOrchestrator', () => {
     expect(serialized).not.toContain('api_key');
     expect(serialized).not.toContain('secret');
     expect(data.errorMessage).not.toContain('AI_ENABLED');
+    expect(data.errorMessage).not.toContain('AI_REAL_CALLS_ENABLED');
     expect(data.errorMessage).not.toContain('realCallsAuthorized');
+    expect(data.errorMessage).not.toContain('realCallsEnabled');
   });
 
   it('contratos públicos sin cambios en respuesta exitosa', async () => {

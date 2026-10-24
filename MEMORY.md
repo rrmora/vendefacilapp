@@ -37,8 +37,11 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 **Estado operativo:**
 - Adaptadores implementados: Gemini (gemini-2.5-flash), Groq
   (llama-3.3-70b-versatile), OpenAI (gpt-4o-mini).
-- Llamadas reales deshabilitadas: AI_ENABLED=false (default) y
-  realCallsAuthorized=false (flag interno en código).
+- Llamadas reales deshabilitadas por defecto: AI_ENABLED=false y
+  AI_REAL_CALLS_ENABLED=false (variable privada del servidor).
+- AI_ENABLED=true no basta para autorizar llamadas reales; se requiere
+  AI_REAL_CALLS_ENABLED=true, un proveedor habilitado con API key y los
+  controles de cuota, presupuesto y seguridad.
 - Contratos públicos intactos: IDescriptionRequest/IDescriptionResponse.
 - Endpoint /api/generate conserva respuesta MOCK.
 - Pendiente: revisión modelo predeterminado Groq (estado Enterprise).
@@ -154,7 +157,7 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 - Resultado verificado: 302 pruebas aprobadas y 0 omitidas, incluida la prueba automatizada de reconciliación PostgreSQL.
 - Hallazgos: timeout/POST-envío se trata como potencial consumo; confirmación de presupuesto y quota resuelta antes de responder éxito; no se alteraron contratos.
 
-- IA_ENABLED=false y realCallsAuthorized=false se mantienen; no se habilitan llamadas reales.
+- IA_ENABLED=false y AI_REAL_CALLS_ENABLED=false se mantienen; no se habilitan llamadas reales.
 - Causa confirmada y corregida del harness PostgreSQL: comandos SQL multilínea y fecha de cuota fija desfasada. Ahora usa fixture SQL con `docker cp` + `psql -f` y `CURRENT_DATE`.
 - Riesgo de producción mitigado en T-004-7 con el estado persistente `sent_uncertain` (migración 017): la expiración ya no libera reservas enviadas a IA.
 ## Reconciliacion T-004-6
@@ -644,7 +647,8 @@ validada. 151 pruebas, lint/typecheck/build exitosos.
 1. T-004-6, T-004-7, T-004-7A, T-004-8.1, T-004-8.2, T-004-8.2b y T-004-8.3
    implementadas y validadas localmente (commits 844784d y 1708ede; 391/391),
    pero sin aprobación para producción. `AI_ENABLED=false` y
-   `realCallsAuthorized=false`.
+   `AI_REAL_CALLS_ENABLED=false`; la autorización de llamadas reales
+   permanece desactivada por defecto.
 2. Programación automática ausente: sin job periódico, la RPC
    `cleanup_rate_limit_events` (022) no se ejecuta sola y las reservas de cuota
    y presupuesto no se consolidan. `run_maintenance` (025) ya existe y escribe

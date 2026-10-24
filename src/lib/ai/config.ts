@@ -12,6 +12,7 @@ export interface AIProviderConfig {
 
 export interface AIConfig {
   readonly enabled: boolean;
+  readonly realCallsEnabled: boolean;
   readonly globalTimeoutMs: number;
   readonly providers: readonly AIProviderConfig[];
 }
@@ -98,6 +99,10 @@ export function getAIConfig(): AIConfig {
 
   cachedConfig = {
     enabled: parseBoolean(process.env.AI_ENABLED, false),
+    realCallsEnabled: parseBoolean(
+      process.env.AI_REAL_CALLS_ENABLED,
+      false
+    ),
     globalTimeoutMs: parseTimeout(
       process.env.AI_GLOBAL_TIMEOUT_MS,
       DEFAULT_GLOBAL_TIMEOUT_MS

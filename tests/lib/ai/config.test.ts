@@ -7,6 +7,7 @@ import {
 
 const ENV_KEYS = [
   'AI_ENABLED',
+  'AI_REAL_CALLS_ENABLED',
   'AI_GLOBAL_TIMEOUT_MS',
   'AI_GEMINI_API_KEY',
   'AI_GEMINI_ENABLED',
@@ -61,6 +62,28 @@ describe('getAIConfig', () => {
     expect(getAIConfig().enabled).toBe(false);
   });
 
+  it('devuelve AI_REAL_CALLS_ENABLED=false por defecto', () => {
+    expect(getAIConfig().realCallsEnabled).toBe(false);
+  });
+
+  it('respeta AI_REAL_CALLS_ENABLED=true', () => {
+    process.env.AI_REAL_CALLS_ENABLED = 'true';
+    expect(getAIConfig().realCallsEnabled).toBe(true);
+  });
+
+  it('respeta AI_REAL_CALLS_ENABLED=1', () => {
+    process.env.AI_REAL_CALLS_ENABLED = '1';
+    expect(getAIConfig().realCallsEnabled).toBe(true);
+  });
+
+  it.each(['false', 'maybe', ''])(
+    'falla cerrado con AI_REAL_CALLS_ENABLED=%s',
+    (value) => {
+      process.env.AI_REAL_CALLS_ENABLED = value;
+      expect(getAIConfig().realCallsEnabled).toBe(false);
+    }
+  );
+
   it('usa timeout global de 25s por defecto', () => {
     expect(getAIConfig().globalTimeoutMs).toBe(25_000);
   });
@@ -88,6 +111,17 @@ describe('getAIConfig', () => {
   });
 
   it('desactiva proveedores sin API key por defecto', () => {
+    const config = getAIConfig();
+
+    for (const provider of config.providers) {
+      expect(provider.enabled).toBe(false);
+      expect(provider.apiKey).toBeNull();
+    }
+  });
+
+  it('AI_REAL_CALLS_ENABLED no habilita proveedores sin API key', () => {
+    process.env.AI_REAL_CALLS_ENABLED = 'true';
+
     const config = getAIConfig();
 
     for (const provider of config.providers) {

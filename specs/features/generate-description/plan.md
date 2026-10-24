@@ -86,7 +86,7 @@ especificación de T-004 y requieren un plan técnico para aprobación.
 - Arquitectura de IA completada y documentada.
 - Adaptadores: Gemini, Groq, OpenAI implementados con fetch nativo.
 - Llamadas reales deshabilitadas: AI_ENABLED=false (default),
-  realCallsAuthorized=false (flag interno).
+  AI_REAL_CALLS_ENABLED=false (variable privada del servidor).
 - 151 pruebas, lint/typecheck/build exitosos.
 - Contratos públicos intactos.
 

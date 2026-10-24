@@ -394,14 +394,17 @@ DELETE FROM ip_rate_limits WHERE window_start < NOW() - INTERVAL '24 hours';
 
 Todas las siguientes condiciones deben cumplirse para realizar una llamada real:
 
-1. `AI_ENABLED=true` (variable de entorno)
-2. `realCallsAuthorized=true` (flag en codigo)
-3. Cuota disponible para el visitante
-4. Rate limit IP no excedido
-5. Presupuesto disponible
-6. Proveedor de pago habilitado (si aplica)
+1. `AI_ENABLED=true` (variable de entorno privada)
+2. `AI_REAL_CALLS_ENABLED=true` (variable de entorno privada)
+3. Al menos un proveedor habilitado con API key
+4. Cuota disponible para el visitante
+5. Rate limit IP no excedido
+6. Presupuesto disponible
+7. Proveedor de pago habilitado (si aplica)
 
-Si cualquiera falla, no se genera. No existe mecanismo para saltarse estos controles.
+Si cualquiera falla, no se genera. La autorización solo se activa mediante
+configuración privada del servidor; no se acepta desde el body, cookies ni
+cabeceras.
 
 ### 6.3 Errores de transaccion
 
@@ -570,7 +573,7 @@ de commit pendiente.
 | D2 | Modelo Groq: posponer hasta verificar disponibilidad | Aprobada |
 | D3 | Rate limit: 10/min, 100/hora, 500/dia | Aprobada |
 | D4 | Presupuesto: calculo por modelo con max tokens, fallback, estimacion conservadora | Aprobada |
-| D5 | Cascada AI_ENABLED + realCallsAuthorized + cuota + presupuesto + disponibilidad | Aprobada |
+| D5 | Cascada AI_ENABLED + AI_REAL_CALLS_ENABLED + proveedor + cuota + presupuesto + disponibilidad | Aprobada |
 
 ## 10. Rate limiting por IP (T-004-4, T-004-7A)
 
@@ -782,7 +785,7 @@ de commit pendiente.
   cuota, de reconciliación de presupuesto y de timestamps de transición, y la
   limpieza global de eventos de rate limit están implementadas y validadas
   localmente (commits 844784d y 1708ede; 391/391), pero no aprobadas para
-  producción. `AI_ENABLED=false` y `realCallsAuthorized=false` se mantienen.
+  producción. `AI_ENABLED=false` y `AI_REAL_CALLS_ENABLED=false` se mantienen.
 - **APROBACIÓN PENDIENTE — T-004-8.4.** La tabla `maintenance_runs` (023) está
   implementada y validada localmente (412/412) y committeada en e79dc86, pero sin
   push. No requiere aprobación de producción porque aún no escribe datos por sí

@@ -9,11 +9,12 @@ vi.mock('@/lib/ai/orchestrator', () => ({
   generateWithFallback: mockGenerateWithFallback,
 }));
 
+import { generateDescription } from '@/lib/ai/descriptionService';
 import {
   authorizeRealCalls,
-  generateDescription,
+  restoreRealCallsEnv,
   revokeRealCallsAuthorization,
-} from '@/lib/ai/descriptionService';
+} from '../../helpers/aiRealCalls';
 import { resetAIConfigCache } from '@/lib/ai/config';
 import type { OrchestratorOptions } from '@/lib/ai/orchestrator';
 import type {
@@ -32,7 +33,11 @@ const validInput: IDescriptionRequest = {
 
 const visitorId = '123e4567-e89b-42d3-a456-426614174000';
 
-const ENV_KEYS = ['AI_ENABLED', 'AI_GEMINI_API_KEY'] as const;
+const ENV_KEYS = [
+  'AI_ENABLED',
+  'AI_REAL_CALLS_ENABLED',
+  'AI_GEMINI_API_KEY',
+] as const;
 const originalEnv: Record<string, string | undefined> = {};
 
 type MockClientOptions = {
@@ -150,8 +155,7 @@ describe('generateDescription compensación exterior', () => {
         process.env[key] = value;
       }
     }
-    revokeRealCallsAuthorization();
-    resetAIConfigCache();
+    restoreRealCallsEnv(originalEnv.AI_REAL_CALLS_ENABLED);
     resetSupabaseClient();
   });
 

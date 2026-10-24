@@ -41,7 +41,7 @@ aceptación, validaciones.
 - **Estado:** completada (2026-10-11). Tareas T-003A-1 a T-003A-10.
 - **Adaptadores:** Gemini (gemini-2.5-flash), Groq (llama-3.3-70b-versatile),
   OpenAI (gpt-4o-mini). Llamadas reales deshabilitadas.
-- **Protecciones:** AI_ENABLED=false, realCallsAuthorized=false.
+- **Protecciones:** AI_ENABLED=false, AI_REAL_CALLS_ENABLED=false.
 - **Contratos públicos:** intactos.
 - **Pendiente:** revisión modelo predeterminado Groq.
 

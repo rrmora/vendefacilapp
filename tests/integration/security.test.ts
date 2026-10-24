@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST } from '@/app/api/generate/route';
+import { generateDescription } from '@/lib/ai/descriptionService';
 import {
   areRealCallsAuthorized,
   authorizeRealCalls,
-  generateDescription,
+  restoreRealCallsEnv,
   revokeRealCallsAuthorization,
-} from '@/lib/ai/descriptionService';
+} from '../helpers/aiRealCalls';
 import { resetAIConfigCache } from '@/lib/ai/config';
 import { resetOrchestratorCache } from '@/lib/ai/orchestrator';
 
@@ -18,6 +19,7 @@ const validBody = {
 
 const ENV_KEYS = [
   'AI_ENABLED',
+  'AI_REAL_CALLS_ENABLED',
   'AI_GLOBAL_TIMEOUT_MS',
   'AI_GEMINI_API_KEY',
   'AI_GEMINI_ENABLED',
@@ -40,7 +42,6 @@ beforeEach(() => {
   resetAIConfigCache();
   resetOrchestratorCache();
   revokeRealCallsAuthorization();
-  vi.unstubAllGlobals();
 });
 
 afterEach(() => {
@@ -52,9 +53,10 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
-  resetAIConfigCache();
+  restoreRealCallsEnv(originalEnv.AI_REAL_CALLS_ENABLED);
   resetOrchestratorCache();
-  revokeRealCallsAuthorization();
+  vi.unstubAllGlobals();
+  vi.doUnmock('@/lib/ai/orchestrator');
 });
 
 function buildRequest(body: unknown): Request {
@@ -81,7 +83,7 @@ describe('T-003A-9: Integración y seguridad', () => {
     expect(data.tokensUsed).toBeNull();
   });
 
-  it('2. AI_ENABLED=true con realCallsAuthorized=false no realiza llamadas externas', async () => {
+  it('2. AI_ENABLED=true sin AI_REAL_CALLS_ENABLED no realiza llamadas externas', async () => {
     process.env.AI_ENABLED = 'true';
     expect(areRealCallsAuthorized()).toBe(false);
 
@@ -97,13 +99,15 @@ describe('T-003A-9: Integración y seguridad', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('3. realCallsAuthorized no puede modificarse desde el body del request', async () => {
+  it('3. La autorizacion de llamadas reales no puede modificarse desde el body', async () => {
     process.env.AI_ENABLED = 'true';
     revokeRealCallsAuthorization();
 
     const maliciousBody = {
       ...validBody,
       realCallsAuthorized: true,
+      realCallsEnabled: true,
+      AI_REAL_CALLS_ENABLED: true,
       allowRealCalls: true,
       skipAuth: true,
     };
@@ -190,8 +194,6 @@ describe('T-003A-9: Integración y seguridad', () => {
       expect(result.errorMessage).toBeDefined();
       expect(typeof result.errorMessage).toBe('string');
     }
-
-    vi.doUnmock('@/lib/ai/orchestrator');
   });
 
   it('7. BUDGET_EXCEEDED se conserva sin convertirse en PROVIDER_UNAVAILABLE', async () => {
@@ -225,8 +227,6 @@ describe('T-003A-9: Integración y seguridad', () => {
     if (!result.success) {
       expect(result.errorCode).toBe('BUDGET_EXCEEDED');
     }
-
-    vi.doUnmock('@/lib/ai/orchestrator');
   });
 
   it('8. El fallback respeta el orden configurado', async () => {
@@ -273,8 +273,6 @@ describe('T-003A-9: Integración y seguridad', () => {
     if (result.success) {
       expect(result.providerName).toBe('groq');
     }
-
-    vi.doUnmock('@/lib/ai/orchestrator');
   });
 
   it('9. Los proveedores de pago permanecen bloqueados sin autorización', async () => {
@@ -335,7 +333,9 @@ describe('T-003A-9: Integración y seguridad', () => {
     const serialized2 = JSON.stringify(data2);
 
     expect(serialized2).not.toContain('AI_ENABLED');
+    expect(serialized2).not.toContain('AI_REAL_CALLS_ENABLED');
     expect(serialized2).not.toContain('realCallsAuthorized');
+    expect(serialized2).not.toContain('realCallsEnabled');
     expect(serialized2).not.toContain('allowPaidProviders');
     expect(data2).not.toHaveProperty('provider');
     expect(data2).not.toHaveProperty('stack');
@@ -354,5 +354,12 @@ describe('T-003A-9: Integración y seguridad', () => {
 
     expect(areRealCallsAuthorized()).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('13. La limpieza posterior no deja stubs globales ni módulos simulados', async () => {
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
+
+    const orchestrator = await import('@/lib/ai/orchestrator');
+    expect(vi.isMockFunction(orchestrator.generateWithFallback)).toBe(false);
   });
 });

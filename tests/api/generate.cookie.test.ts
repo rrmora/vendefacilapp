@@ -3,8 +3,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { POST } from '../../src/app/api/generate/route';
 import {
   authorizeRealCalls,
+  restoreRealCallsEnv,
   revokeRealCallsAuthorization,
-} from '../../src/lib/ai/descriptionService';
+} from '../helpers/aiRealCalls';
 import { resetAIConfigCache } from '../../src/lib/ai/config';
 import {
   resetSupabaseClient,
@@ -23,6 +24,7 @@ const validBody = {
 
 const ENV_KEYS = [
   'AI_ENABLED',
+  'AI_REAL_CALLS_ENABLED',
   'AI_GEMINI_API_KEY',
   'TRUST_PROXY',
   'AI_GEMINI_MODEL',
@@ -181,8 +183,7 @@ describe('POST /api/generate visitor cookie handling', () => {
       }
     }
 
-    revokeRealCallsAuthorization();
-    resetAIConfigCache();
+    restoreRealCallsEnv(originalEnv.AI_REAL_CALLS_ENABLED);
     resetSupabaseClient();
     vi.unstubAllGlobals();
   });

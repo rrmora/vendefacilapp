@@ -91,10 +91,14 @@ implementar cuotas (Fase 4).
 
 ### 8.2 Protecciones activas
 
-- **AI_ENABLED=false** (default): desactiva toda la cadena de IA.
-- **realCallsAuthorized=false** (flag interno en código): segunda
-  protección independiente. Sin autorización, el endpoint responde
-  503 INTERNAL_ERROR sin contactar proveedores.
+- **AI_ENABLED=false** (default): devuelve la respuesta MOCK HTTP 200 sin
+  llamadas externas ni reservas.
+- **AI_REAL_CALLS_ENABLED=false** (variable privada del servidor): con
+  AI_ENABLED=true, segunda protección independiente. Sin autorización, el
+  endpoint responde 503 INTERNAL_ERROR sin llamadas externas ni reservas.
+- Con ambas variables activas se exige al menos un proveedor habilitado
+  con API key. Si no existe, el endpoint responde 503 antes de rate limit,
+  cuota y presupuesto.
 - Endpoint /api/generate conserva respuesta MOCK cuando AI está deshabilitado.
 
 ### 8.3 Contratos públicos

@@ -128,20 +128,6 @@ export interface GenerateDescriptionOptions {
   clientIp?: string | null;
 }
 
-let realCallsAuthorized = false;
-
-export function authorizeRealCalls(): void {
-  realCallsAuthorized = true;
-}
-
-export function revokeRealCallsAuthorization(): void {
-  realCallsAuthorized = false;
-}
-
-export function areRealCallsAuthorized(): boolean {
-  return realCallsAuthorized;
-}
-
 export async function generateDescription(
   input: IDescriptionRequest,
   options: GenerateDescriptionOptions = {}
@@ -152,7 +138,21 @@ export async function generateDescription(
     return { response: mockResponse(input), status: 200 };
   }
 
-  if (!realCallsAuthorized) {
+  if (!config.realCallsEnabled) {
+    return {
+      response: errorResponse(
+        'INTERNAL_ERROR',
+        'La generación con IA no está disponible todavía.'
+      ),
+      status: 503,
+    };
+  }
+
+  const hasEligibleProvider = config.providers.some(
+    (provider) => provider.enabled && provider.apiKey !== null
+  );
+
+  if (!hasEligibleProvider) {
     return {
       response: errorResponse(
         'INTERNAL_ERROR',

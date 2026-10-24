@@ -20,6 +20,33 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## IA y despliegue en Vercel
+
+Las llamadas reales a proveedores de IA están deshabilitadas por defecto. El modo mock se conserva con `AI_ENABLED=false`.
+
+### Entornos
+
+| Entorno | `AI_ENABLED` | `AI_REAL_CALLS_ENABLED` | Resultado |
+|---|---|---|---|
+| Production | `true` | `true` | Permite el flujo real si hay proveedor, cuota y presupuesto disponibles. |
+| Preview | `false` o ausente | `false` o ausente | Modo mock. |
+| Development | `false` o ausente | `false` o ausente | Modo mock. |
+
+`AI_REAL_CALLS_ENABLED` debe configurarse únicamente en el scope **Production** de Vercel. No debe llevar el prefijo `NEXT_PUBLIC_`.
+
+### Secretos y proveedores
+
+- Configura `AI_GEMINI_API_KEY`, `AI_GROQ_API_KEY` y `AI_OPENAI_API_KEY` como variables de servidor en Vercel, nunca en el repositorio.
+- OpenAI requiere además `AI_OPENAI_ENABLED=true`.
+- `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` son necesarias para cuota, rate limit y presupuesto.
+- Los cambios de variables de entorno requieren un nuevo deployment para aplicarse.
+
+### Límites de la autorización
+
+Habilitar `AI_ENABLED=true` y `AI_REAL_CALLS_ENABLED=true` no garantiza que exista un proveedor elegible, presupuesto disponible ni una configuración de red válida. Si falta un proveedor con API key, el endpoint responde 503 antes de reservar cuota o presupuesto. En Vercel también debe revisarse la configuración de IP/proxy (`TRUST_PROXY`) antes de habilitar llamadas reales.
+
+Las pruebas no realizan llamadas reales: usan un `fetch` mockeado y credenciales ficticias.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
