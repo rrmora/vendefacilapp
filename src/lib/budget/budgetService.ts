@@ -33,10 +33,8 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
   },
 };
 
-const FALLBACK_PRICING: ModelPricing = MODEL_PRICING['gpt-4o-mini'];
-
-export function getModelPricing(model: string): ModelPricing {
-  return MODEL_PRICING[model] ?? FALLBACK_PRICING;
+export function getModelPricing(model: string): ModelPricing | null {
+  return MODEL_PRICING[model] ?? null;
 }
 
 export function calculateMaxCostUsd(pricing: ModelPricing): number {
@@ -126,6 +124,8 @@ export type BudgetConfirmationResult =
       reservedCostUsd: number;
       actualCostUsd: number;
       costEstimated: boolean;
+      exceedsReservation: boolean;
+      excessCostUsd: number;
     }
   | { status: 'already_processed'; previousStatus: string }
   | { status: 'not_found' };
@@ -246,12 +246,27 @@ export async function confirmBudget(request: {
       });
 
       if (result.status === 'confirmed') {
+        const hasReservedCost = typeof result.reserved_cost_usd === 'number';
+        const reservedCostUsd =
+          typeof result.reserved_cost_usd === 'number'
+            ? result.reserved_cost_usd
+            : 0;
+        const confirmedActualCostUsd = result.actual_cost_usd ?? actualCostUsd;
+        const exceedsReservation =
+          hasReservedCost &&
+          roundCost(confirmedActualCostUsd) > roundCost(reservedCostUsd);
+
         return {
           status: 'confirmed',
           month: result.month ?? getBudgetMonth(),
-          reservedCostUsd: result.reserved_cost_usd ?? 0,
-          actualCostUsd: result.actual_cost_usd ?? actualCostUsd,
+          reservedCostUsd,
+          actualCostUsd: confirmedActualCostUsd,
           costEstimated: Boolean(result.cost_estimated),
+          exceedsReservation,
+          excessCostUsd:
+            hasReservedCost && exceedsReservation
+              ? roundCost(confirmedActualCostUsd - reservedCostUsd)
+              : 0,
         };
       }
 

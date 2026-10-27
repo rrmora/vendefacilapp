@@ -245,7 +245,15 @@ describe('T-003A-9: Integración y seguridad', () => {
       generateWithFallback: vi.fn().mockImplementation(async () => {
         return {
           success: true,
-          result: { text: 'test', tokensUsed: 10 },
+          result: {
+            text: 'test',
+            usage: {
+              inputTokens: null,
+              outputTokens: null,
+              reasoningTokens: null,
+              totalTokens: 10,
+            },
+          },
           providerName: 'groq',
         };
       }),

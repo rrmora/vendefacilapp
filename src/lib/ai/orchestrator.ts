@@ -7,6 +7,7 @@ import type {
   AIProviderCallContext,
   AIProviderGenerationRequest,
   AIProviderGenerationResult,
+  AIProviderTokenUsage,
   IAIProvider,
 } from './types';
 
@@ -41,11 +42,16 @@ export interface BudgetProviderReservation {
 export type BudgetControllerResult =
   | { allowed: true; reservation: BudgetProviderReservation }
   | { allowed: false; reason: 'budget_exceeded' }
-  | { allowed: false; reason: 'budget_unavailable' };
+  | { allowed: false; reason: 'budget_unavailable' }
+  | { allowed: false; reason: 'pricing_unavailable' };
 
 export interface BudgetController {
   reserve(provider: string, model: string): Promise<BudgetControllerResult>;
-  confirmReservation(reservationId: string, tokensUsed: number | null, model: string): Promise<void>;
+  confirmReservation(
+    reservationId: string,
+    usage: AIProviderTokenUsage,
+    model: string
+  ): Promise<void>;
   consumeUnknown(reservationId: string, model: string): Promise<void>;
   release(reservationId: string): Promise<void>;
 }
@@ -226,7 +232,7 @@ export async function generateWithFallback(
         try {
           await budgetController.confirmReservation(
             reservationId,
-            result.tokensUsed,
+            result.usage,
             providerInfo.model
           );
         } catch {

@@ -112,6 +112,15 @@ function createPreSendError(provider: 'gemini' | 'groq' | 'openai'): AIProviderE
   });
 }
 
+function tokenUsage(totalTokens: number | null) {
+  return {
+    inputTokens: null,
+    outputTokens: null,
+    reasoningTokens: null,
+    totalTokens,
+  };
+}
+
 function createBudgetController() {
   const reserve = vi.fn(async (): Promise<BudgetControllerResult> => ({
     allowed: true,
@@ -148,7 +157,7 @@ describe('generateWithFallback', () => {
   it('ejecuta el primer proveedor exitosamente', async () => {
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción de Gemini', tokensUsed: 100 });
+    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción de Gemini', usage: tokenUsage(100) });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -170,7 +179,7 @@ describe('generateWithFallback', () => {
     process.env.AI_GROQ_ENABLED = 'true';
 
     mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
-    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
+    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', usage: tokenUsage(100) });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -186,7 +195,7 @@ describe('generateWithFallback', () => {
   it('omite proveedores sin configuración', async () => {
     process.env.AI_GROQ_API_KEY = 'groq-key';
     process.env.AI_GROQ_ENABLED = 'true';
-    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
+    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', usage: tokenUsage(100) });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -283,7 +292,7 @@ describe('generateWithFallback', () => {
   it('pasa timeout individual al proveedor', async () => {
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', usage: tokenUsage(100) });
 
     await generateWithFallback(baseRequest, {
       ...baseContext,
@@ -300,7 +309,7 @@ describe('generateWithFallback', () => {
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_ENABLED = 'true';
     process.env.AI_GLOBAL_TIMEOUT_MS = '25000';
-    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', usage: tokenUsage(100) });
 
     await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -339,7 +348,7 @@ describe('generateWithFallback', () => {
     process.env.AI_GEMINI_ENABLED = 'true';
     process.env.AI_GEMINI_PRIORITY = '2';
 
-    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
+    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', usage: tokenUsage(100) });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
       allowPaidProviders: true,
@@ -355,7 +364,7 @@ describe('generateWithFallback', () => {
   it('registra metadatos técnicos seguros en onProviderAttempt', async () => {
     process.env.AI_GEMINI_API_KEY = 'gemini-key';
     process.env.AI_GEMINI_ENABLED = 'true';
-    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+    mockGeminiGenerate.mockResolvedValue({ text: 'Descripción', usage: tokenUsage(100) });
 
     const attempts: Array<{
       provider: string;
@@ -409,7 +418,7 @@ describe('generateWithFallback', () => {
     process.env.AI_GROQ_PRIORITY = '2';
 
     mockOpenAIGenerate.mockRejectedValue(createPreSendError('openai'));
-    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', tokensUsed: 100 });
+    mockGroqGenerate.mockResolvedValue({ text: 'Descripción de Groq', usage: tokenUsage(100) });
 
     const budget = createBudgetController();
     budget.reserve.mockResolvedValueOnce({
@@ -591,6 +600,62 @@ describe('generateWithFallback', () => {
     expect(budget.release).not.toHaveBeenCalled();
   });
 
+  it('falla cerrado sin hacer fallback cuando falta el precio del modelo de pago', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+    process.env.AI_OPENAI_PRIORITY = '1';
+    process.env.AI_GEMINI_API_KEY = 'gemini-key';
+    process.env.AI_GEMINI_ENABLED = 'true';
+    process.env.AI_GEMINI_PRIORITY = '2';
+
+    const budget = createBudgetController();
+    budget.reserve.mockResolvedValue({
+      allowed: false,
+      reason: 'pricing_unavailable',
+    });
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.errorCode).toBe('INTERNAL_ERROR');
+      expect(result.quotaDisposition).toBe('release');
+    }
+    expect(mockOpenAIGenerate).not.toHaveBeenCalled();
+    expect(mockGeminiGenerate).not.toHaveBeenCalled();
+    expect(budget.release).not.toHaveBeenCalled();
+  });
+
+  it('pasa el uso separado de input y output a confirmReservation', async () => {
+    process.env.AI_OPENAI_API_KEY = 'openai-key';
+    process.env.AI_OPENAI_ENABLED = 'true';
+
+    const usage = {
+      inputTokens: 600,
+      outputTokens: 200,
+      reasoningTokens: 0,
+      totalTokens: 800,
+    };
+    mockOpenAIGenerate.mockResolvedValue({ text: 'Descripción', usage });
+
+    const budget = createBudgetController();
+
+    const result = await generateWithFallback(baseRequest, baseContext, {
+      allowPaidProviders: true,
+      budgetController: budget.controller,
+    });
+
+    expect(result.success).toBe(true);
+    expect(budget.confirmReservation).toHaveBeenCalledWith(
+      'budget-1',
+      usage,
+      'gpt-4o-mini'
+    );
+  });
+
   it('clasifica como complete una excepción desconocida del proveedor', async () => {
     process.env.AI_OPENAI_API_KEY = 'openai-key';
     process.env.AI_OPENAI_ENABLED = 'true';
@@ -636,7 +701,7 @@ describe('generateWithFallback', () => {
   it('mantiene complete si falla la confirmación de presupuesto tras el envío', async () => {
     process.env.AI_OPENAI_API_KEY = 'openai-key';
     process.env.AI_OPENAI_ENABLED = 'true';
-    mockOpenAIGenerate.mockResolvedValue({ text: 'Descripción', tokensUsed: 100 });
+    mockOpenAIGenerate.mockResolvedValue({ text: 'Descripción', usage: tokenUsage(100) });
 
     const budget = createBudgetController();
     budget.confirmReservation.mockRejectedValue(
@@ -700,7 +765,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
     mockGeminiGenerate.mockRejectedValueOnce(createRecoverableError('gemini'));
     mockGroqGenerate.mockResolvedValueOnce({
       text: 'Descripción de Groq',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const first = await generateWithFallback(baseRequest, baseContext, {
@@ -714,7 +779,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockGeminiGenerate.mockResolvedValueOnce({
       text: 'Descripción de Gemini',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const second = await generateWithFallback(baseRequest, baseContext, {
@@ -735,7 +800,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockGeminiGenerate.mockResolvedValue({
       text: 'Descripción de Gemini',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const budget = createBudgetController();
@@ -762,7 +827,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
     mockGeminiGenerate.mockRejectedValue(createRecoverableError('gemini'));
     mockGroqGenerate.mockResolvedValue({
       text: 'Descripción de Groq',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const budget = createBudgetController();
@@ -790,7 +855,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockGeminiGenerate.mockResolvedValue({
       text: 'Descripción de Gemini',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const budget = createBudgetController();
@@ -914,7 +979,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockOpenAIGenerate.mockResolvedValue({
       text: 'Descripción de OpenAI',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const budget = createBudgetController();
@@ -942,7 +1007,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockOpenAIGenerate.mockResolvedValue({
       text: 'Descripción de OpenAI',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -962,7 +1027,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockOpenAIGenerate.mockResolvedValue({
       text: 'Descripción de OpenAI',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -981,7 +1046,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockGeminiGenerate.mockResolvedValue({
       text: 'Descripción de Gemini',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -1001,7 +1066,7 @@ describe('T-005.1 política de proveedores gratuitos y de pago', () => {
 
     mockOpenAIGenerate.mockResolvedValue({
       text: 'Descripción de OpenAI',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -1028,7 +1093,7 @@ describe('T-005.4 recuperación de proveedores entre solicitudes', () => {
     mockGeminiGenerate.mockRejectedValueOnce(createRecoverableError('gemini'));
     mockGroqGenerate.mockResolvedValueOnce({
       text: 'Descripción de Groq',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const result = await generateWithFallback(baseRequest, baseContext, {
@@ -1062,11 +1127,11 @@ describe('T-005.4 recuperación de proveedores entre solicitudes', () => {
       .mockRejectedValueOnce(createRecoverableError('gemini'))
       .mockResolvedValueOnce({
         text: 'Descripción de Gemini',
-        tokensUsed: 100,
+        usage: tokenUsage(100),
       });
     mockGroqGenerate.mockResolvedValueOnce({
       text: 'Descripción de Groq',
-      tokensUsed: 100,
+      usage: tokenUsage(100),
     });
 
     const first = await generateWithFallback(baseRequest, baseContext, {

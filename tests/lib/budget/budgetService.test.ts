@@ -24,6 +24,14 @@ function createErrorClient(): SupabaseClient {
   return { rpc } as unknown as SupabaseClient;
 }
 
+function requirePricing(model: string) {
+  const pricing = getModelPricing(model);
+  if (!pricing) {
+    throw new Error(`Missing pricing for ${model}`);
+  }
+  return pricing;
+}
+
 describe('budgetService', () => {
   beforeEach(() => {
     resetSupabaseClient();
@@ -112,6 +120,33 @@ describe('budgetService', () => {
 
       expect(result.status).toBe('confirmed');
       expect(result.status === 'confirmed' && result.actualCostUsd).toBe(0.0012);
+      expect(result.status === 'confirmed' && result.exceedsReservation).toBe(
+        false
+      );
+    });
+
+    it('señala el exceso sin alterar el costo confirmado', async () => {
+      setSupabaseClient(
+        createMockClient({
+          status: 'confirmed',
+          month: '2026-10',
+          reserved_cost_usd: 0.001,
+          actual_cost_usd: 0.0012,
+          cost_estimated: false,
+        })
+      );
+
+      const result = await confirmBudget({
+        reservationId: '00000000-0000-4000-8000-000000000001',
+        actualCostUsd: 0.0012,
+      });
+
+      expect(result.status).toBe('confirmed');
+      if (result.status === 'confirmed') {
+        expect(result.actualCostUsd).toBe(0.0012);
+        expect(result.exceedsReservation).toBe(true);
+        expect(result.excessCostUsd).toBe(0.0002);
+      }
     });
 
     it('es idempotente', async () => {
@@ -195,19 +230,35 @@ describe('budgetService', () => {
 
   describe('cálculo de costos', () => {
     it('calcula costo máximo de gemini', () => {
-      const pricing = getModelPricing('gemini-2.5-flash');
+      const pricing = requirePricing('gemini-2.5-flash');
       expect(calculateMaxCostUsd(pricing)).toBe(0.001843);
     });
 
     it('calcula costo actual con tokens reportados', () => {
-      const pricing = getModelPricing('gpt-4o-mini');
+      const pricing = requirePricing('gpt-4o-mini');
       expect(calculateActualCostUsd({ pricing, tokensInput: 400, tokensOutput: 200, costEstimated: false })).toBe(0.00018);
+    });
+
+    it('usa tarifas separadas para input y output', () => {
+      const pricing = requirePricing('gpt-4o-mini');
+      expect(
+        calculateActualCostUsd({
+          pricing,
+          tokensInput: 600,
+          tokensOutput: 200,
+          costEstimated: false,
+        })
+      ).toBe(0.00021);
+    });
+
+    it('no reutiliza el precio de gpt-4o-mini para modelos desconocidos', () => {
+      expect(getModelPricing('unknown-paid-model')).toBeNull();
     });
 
     it('usa defaults conservadores si no hay tokens', () => {
       process.env.AI_MAX_TOKENS_DEFAULT_INPUT = '400';
       process.env.AI_MAX_TOKENS_DEFAULT_OUTPUT = '200';
-      const pricing = getModelPricing('gpt-4o-mini');
+      const pricing = requirePricing('gpt-4o-mini');
       expect(calculateActualCostUsd({ pricing, tokensInput: null, tokensOutput: null, costEstimated: true })).toBe(0.00018);
     });
   });

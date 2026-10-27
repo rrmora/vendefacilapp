@@ -18,7 +18,12 @@ const fakeProvider: IAIProvider = {
 
     return {
       text: `[FAKE] ${request.category}/${request.condition}/v${request.variant}/${deadline}`,
-      tokensUsed: request.userNotes.length,
+      usage: {
+        inputTokens: request.userNotes.length,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: request.userNotes.length,
+      },
     };
   },
 };
@@ -40,7 +45,12 @@ describe('contrato IAIProvider', () => {
     const result = await fakeProvider.generate(request, context);
 
     expect(result.text).toContain('electronica/buen_estado/v1/limite-25000');
-    expect(result.tokensUsed).toBe(19);
+    expect(result.usage).toEqual({
+      inputTokens: 19,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 19,
+    });
   });
 
   it('expone el nombre y la naturaleza de pago del proveedor', () => {

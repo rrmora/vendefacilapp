@@ -1,5 +1,7 @@
 import { buildDescriptionPrompt } from '../prompt';
 import { AIProviderError } from '../errors';
+import { createTokenUsage } from '../tokenUsage';
+import { getModelPricing } from '@/lib/budget/budgetService';
 import type {
   AIProviderCallContext,
   AIProviderGenerationRequest,
@@ -100,10 +102,13 @@ function extractText(response: OpenAIResponse): string {
   return (response.choices?.[0]?.message?.content ?? '').trim();
 }
 
-function extractTokens(response: OpenAIResponse): number | null {
-  const usage = response.usage;
-  if (!usage) return null;
-  return usage.total_tokens ?? usage.prompt_tokens ?? null;
+function extractUsage(response: OpenAIResponse) {
+  return createTokenUsage(
+    response.usage?.prompt_tokens,
+    response.usage?.completion_tokens,
+    response.usage?.total_tokens,
+    0
+  );
 }
 
 export class OpenAIProvider implements IAIProvider {
@@ -129,6 +134,16 @@ export class OpenAIProvider implements IAIProvider {
     const onAbort = () => controller.abort();
 
     try {
+      const pricing = getModelPricing(this.model);
+      if (!pricing) {
+        throw new AIProviderError({
+          kind: 'NOT_CONFIGURED',
+          provider: 'openai',
+          message: 'Model is not configured with an output token limit',
+          requestDispatched: false,
+        });
+      }
+
       const { systemPrompt, userContent } = buildDescriptionPrompt(request);
       const body = JSON.stringify({
         model: this.model,
@@ -136,6 +151,7 @@ export class OpenAIProvider implements IAIProvider {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userContent },
         ],
+        max_completion_tokens: pricing.maxOutputTokens,
       });
 
       timeoutId = setTimeout(() => controller.abort(), context.timeoutMs);
@@ -196,7 +212,7 @@ export class OpenAIProvider implements IAIProvider {
         });
       }
 
-      return { text, tokensUsed: extractTokens(data) };
+      return { text, usage: extractUsage(data) };
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {

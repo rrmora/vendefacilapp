@@ -46,6 +46,17 @@ describe('GeminiProvider', () => {
     expect(provider.isPaid).toBe(false);
   });
 
+  it('rechaza un modelo sin precio y límite antes de despachar', async () => {
+    const provider = new GeminiProvider('test-key', 'unknown-gemini-model');
+
+    await expect(provider.generate(baseRequest, baseContext)).rejects.toMatchObject({
+      kind: 'NOT_CONFIGURED',
+      provider: 'gemini',
+      requestDispatched: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('genera descripción exitosamente y normaliza la respuesta', async () => {
     const mockData: unknown = {
       candidates: [
@@ -59,6 +70,7 @@ describe('GeminiProvider', () => {
       usageMetadata: {
         promptTokenCount: 100,
         candidatesTokenCount: 50,
+        thoughtsTokenCount: 0,
         totalTokenCount: 150,
       },
     };
@@ -68,7 +80,37 @@ describe('GeminiProvider', () => {
     const result = await provider.generate(baseRequest, baseContext);
 
     expect(result.text).toBe('iPhone 13 en buen estado, batería al 85%.');
-    expect(result.tokensUsed).toBe(150);
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      reasoningTokens: 0,
+      totalTokens: 150,
+    });
+  });
+
+  it('conserva los tokens de razonamiento separados del output visible', async () => {
+    const mockData: unknown = {
+      candidates: [
+        { content: { parts: [{ text: 'Descripción generada' }] } },
+      ],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        thoughtsTokenCount: 75,
+        totalTokenCount: 225,
+      },
+    };
+    vi.mocked(fetch).mockResolvedValue(mockFetchResponse(mockData));
+
+    const provider = new GeminiProvider('test-key', 'gemini-2.5-flash');
+    const result = await provider.generate(baseRequest, baseContext);
+
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      reasoningTokens: 75,
+      totalTokens: 225,
+    });
   });
 
   it('construye la solicitud con el prompt builder y la API key', async () => {
@@ -90,6 +132,7 @@ describe('GeminiProvider', () => {
     const body = JSON.parse(options.body as string) as {
       systemInstruction: { parts: Array<{ text: string }> };
       contents: Array<{ parts: Array<{ text: string }> }>;
+      generationConfig: { maxOutputTokens: number };
     };
     expect(body.systemInstruction.parts[0]!.text).toContain(
       'descripción en español'
@@ -97,6 +140,7 @@ describe('GeminiProvider', () => {
     expect(body.contents[0]!.parts[0]!.text).toContain(
       '<<<DATOS_DEL_PRODUCTO>>>'
     );
+    expect(body.generationConfig).toEqual({ maxOutputTokens: 1024 });
   });
 
   it('maneja respuesta vacía', async () => {
@@ -237,7 +281,7 @@ describe('GeminiProvider', () => {
     });
   });
 
-  it('retorna tokensUsed=null cuando no hay usageMetadata', async () => {
+  it('retorna uso vacío cuando no hay usageMetadata', async () => {
     const mockData: unknown = {
       candidates: [{ content: { parts: [{ text: 'Descripción' }] } }],
     };
@@ -246,7 +290,57 @@ describe('GeminiProvider', () => {
     const provider = new GeminiProvider('test-key', 'gemini-2.5-flash');
     const result = await provider.generate(baseRequest, baseContext);
 
-    expect(result.tokensUsed).toBeNull();
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+    });
+  });
+
+  it('normaliza valores de uso inválidos sin inventar métricas', async () => {
+    const mockData: unknown = {
+      candidates: [{ content: { parts: [{ text: 'Descripción' }] } }],
+      usageMetadata: {
+        promptTokenCount: -1,
+        candidatesTokenCount: 50.5,
+        thoughtsTokenCount: -2,
+        totalTokenCount: '150',
+      },
+    };
+    vi.mocked(fetch).mockResolvedValue(mockFetchResponse(mockData));
+
+    const provider = new GeminiProvider('test-key', 'gemini-2.5-flash');
+    const result = await provider.generate(baseRequest, baseContext);
+
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+    });
+  });
+
+  it('marca el razonamiento como desconocido cuando no viene en los metadatos', async () => {
+    const mockData: unknown = {
+      candidates: [{ content: { parts: [{ text: 'Descripción' }] } }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        totalTokenCount: 150,
+      },
+    };
+    vi.mocked(fetch).mockResolvedValue(mockFetchResponse(mockData));
+
+    const provider = new GeminiProvider('test-key', 'gemini-2.5-flash');
+    const result = await provider.generate(baseRequest, baseContext);
+
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      reasoningTokens: null,
+      totalTokens: 150,
+    });
   });
 
   it('no registra API keys, prompts ni datos de productos en errores', async () => {

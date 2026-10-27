@@ -46,6 +46,17 @@ describe('GroqProvider', () => {
     expect(provider.isPaid).toBe(false);
   });
 
+  it('rechaza un modelo sin precio y límite antes de despachar', async () => {
+    const provider = new GroqProvider('test-key', 'unknown-groq-model');
+
+    await expect(provider.generate(baseRequest, baseContext)).rejects.toMatchObject({
+      kind: 'NOT_CONFIGURED',
+      provider: 'groq',
+      requestDispatched: false,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('genera descripción exitosamente y normaliza la respuesta', async () => {
     const mockData: unknown = {
       choices: [
@@ -68,10 +79,15 @@ describe('GroqProvider', () => {
     const result = await provider.generate(baseRequest, baseContext);
 
     expect(result.text).toBe('iPhone 13 en buen estado, batería al 85%.');
-    expect(result.tokensUsed).toBe(150);
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 50,
+      reasoningTokens: 0,
+      totalTokens: 150,
+    });
   });
 
-  it('retorna tokensUsed=null cuando no hay usage', async () => {
+  it('retorna uso vacío cuando no hay usage', async () => {
     const mockData: unknown = {
       choices: [
         {
@@ -86,7 +102,34 @@ describe('GroqProvider', () => {
     const result = await provider.generate(baseRequest, baseContext);
 
     expect(result.text).toBe('Descripción del producto');
-    expect(result.tokensUsed).toBeNull();
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: 0,
+      totalTokens: null,
+    });
+  });
+
+  it('normaliza valores de uso inválidos sin inventar métricas', async () => {
+    const mockData: unknown = {
+      choices: [{ message: { content: 'Descripción del producto' } }],
+      usage: {
+        prompt_tokens: -1,
+        completion_tokens: 50.5,
+        total_tokens: '150',
+      },
+    };
+    vi.mocked(fetch).mockResolvedValue(mockFetchResponse(mockData));
+
+    const provider = new GroqProvider('test-key', 'llama-3.3-70b-versatile');
+    const result = await provider.generate(baseRequest, baseContext);
+
+    expect(result.usage).toEqual({
+      inputTokens: null,
+      outputTokens: null,
+      reasoningTokens: 0,
+      totalTokens: null,
+    });
   });
 
   it('construye la solicitud con mensajes system y user', async () => {
@@ -110,8 +153,10 @@ describe('GroqProvider', () => {
     const body = JSON.parse(options.body as string) as {
       model: string;
       messages: Array<{ role: string; content: string }>;
+      max_tokens: number;
     };
     expect(body.model).toBe('llama-3.3-70b-versatile');
+    expect(body.max_tokens).toBe(1024);
     expect(body.messages).toHaveLength(2);
     expect(body.messages[0]!.role).toBe('system');
     expect(body.messages[0]!.content).toContain('descripción en español');

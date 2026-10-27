@@ -16,9 +16,16 @@ export interface AIProviderGenerationRequest {
   variant: number;
 }
 
+export interface AIProviderTokenUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  reasoningTokens: number | null;
+  totalTokens: number | null;
+}
+
 export interface AIProviderGenerationResult {
   text: string;
-  tokensUsed: number | null;
+  usage: AIProviderTokenUsage;
 }
 
 export interface AIProviderCallContext {

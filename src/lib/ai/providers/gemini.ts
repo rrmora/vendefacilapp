@@ -1,5 +1,7 @@
 import { buildDescriptionPrompt } from '../prompt';
 import { AIProviderError } from '../errors';
+import { createTokenUsage } from '../tokenUsage';
+import { getModelPricing } from '@/lib/budget/budgetService';
 import type {
   AIProviderCallContext,
   AIProviderGenerationRequest,
@@ -19,6 +21,7 @@ interface GeminiResponse {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
     totalTokenCount?: number;
   };
   error?: {
@@ -85,10 +88,13 @@ function extractText(response: GeminiResponse): string {
   return parts.map((p) => p.text ?? '').join('').trim();
 }
 
-function extractTokens(response: GeminiResponse): number | null {
-  const usage = response.usageMetadata;
-  if (!usage) return null;
-  return usage.totalTokenCount ?? usage.promptTokenCount ?? null;
+function extractUsage(response: GeminiResponse) {
+  return createTokenUsage(
+    response.usageMetadata?.promptTokenCount,
+    response.usageMetadata?.candidatesTokenCount,
+    response.usageMetadata?.totalTokenCount,
+    response.usageMetadata?.thoughtsTokenCount
+  );
 }
 
 export class GeminiProvider implements IAIProvider {
@@ -114,11 +120,24 @@ export class GeminiProvider implements IAIProvider {
     const onAbort = () => controller.abort();
 
     try {
+      const pricing = getModelPricing(this.model);
+      if (!pricing) {
+        throw new AIProviderError({
+          kind: 'NOT_CONFIGURED',
+          provider: 'gemini',
+          message: 'Model is not configured with an output token limit',
+          requestDispatched: false,
+        });
+      }
+
       const { systemPrompt, userContent } = buildDescriptionPrompt(request);
       const url = `${GEMINI_API_URL}/${this.model}:generateContent?key=${this.apiKey}`;
       const body = JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ parts: [{ text: userContent }] }],
+        generationConfig: {
+          maxOutputTokens: pricing.maxOutputTokens,
+        },
       });
 
       timeoutId = setTimeout(() => controller.abort(), context.timeoutMs);
@@ -176,7 +195,7 @@ export class GeminiProvider implements IAIProvider {
         });
       }
 
-      return { text, tokensUsed: extractTokens(data) };
+      return { text, usage: extractUsage(data) };
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {

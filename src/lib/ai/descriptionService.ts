@@ -1,5 +1,11 @@
 import { getAIConfig } from './config';
 import { generateWithFallback } from './orchestrator';
+import {
+  getBillableOutputTokens,
+  getPublicTotalTokens,
+  hasCompleteTokenUsage,
+} from './tokenUsage';
+import type { AIProviderTokenUsage } from './types';
 import type { IDescriptionRequest, IDescriptionResponse } from '@/types/description';
 import {
   reserveQuota,
@@ -23,6 +29,7 @@ import {
   getModelPricing,
   BudgetServiceError,
 } from '@/lib/budget/budgetService';
+import type { ModelPricing } from '@/lib/budget/budgetService';
 import { recordGeneration } from '@/lib/generations/generationRecordService';
 import { isValidVisitorId } from '@/lib/visitors/visitorService';
 import type { BudgetController } from './orchestrator';
@@ -114,6 +121,45 @@ function budgetConfirmationSucceeded(
     result.status === 'confirmed' ||
     (result.status === 'already_processed' &&
       result.previousStatus === 'confirmed')
+  );
+}
+
+function calculateUsageCost(
+  pricing: ModelPricing,
+  usage: AIProviderTokenUsage
+): { actualCostUsd: number; costEstimated: boolean } {
+  const costEstimated = !hasCompleteTokenUsage(usage);
+  const actualCostUsd = calculateActualCostUsd({
+    pricing,
+    tokensInput: usage.inputTokens,
+    tokensOutput: getBillableOutputTokens(usage),
+    costEstimated,
+  });
+
+  return { actualCostUsd, costEstimated };
+}
+
+function warnBudgetDiscrepancy(details: {
+  reservationId: string;
+  model: string;
+  reservedCostUsd: number;
+  actualCostUsd: number;
+  excessCostUsd: number;
+}): void {
+  console.warn('[ai-budget] reservation exceeded', details);
+}
+
+function warnOutputLimitExceeded(details: {
+  provider: string;
+  model: string;
+  maxOutputTokens: number;
+  billableOutputTokens: number;
+  visibleOutputTokens: number | null;
+  reasoningTokens: number | null;
+}): void {
+  console.warn(
+    '[ai-provider] reported billable output above configured limit',
+    details
   );
 }
 
@@ -255,6 +301,10 @@ export async function generateDescription(
   const budgetController: BudgetController = {
     reserve: async (provider, model) => {
       const pricing = getModelPricing(model);
+      if (!pricing) {
+        return { allowed: false, reason: 'pricing_unavailable' };
+      }
+
       const maxCostUsd = calculateMaxCostUsd(pricing);
       try {
         const result = await reserveBudget({
@@ -281,15 +331,18 @@ export async function generateDescription(
         return { allowed: false, reason: 'budget_unavailable' };
       }
     },
-    confirmReservation: async (reservationId, tokensUsed, model) => {
+    confirmReservation: async (reservationId, usage, model) => {
       const pricing = getModelPricing(model);
-      const costEstimated = tokensUsed === null;
-      const actualCostUsd = calculateActualCostUsd({
+      if (!pricing) {
+        throw new BudgetServiceError(
+          'No hay precio explícito para el modelo utilizado.'
+        );
+      }
+
+      const { actualCostUsd, costEstimated } = calculateUsageCost(
         pricing,
-        tokensInput: null,
-        tokensOutput: tokensUsed,
-        costEstimated,
-      });
+        usage
+      );
 
       const result = await confirmBudget({
         reservationId,
@@ -302,9 +355,25 @@ export async function generateDescription(
           'No se pudo confirmar la reserva de presupuesto.'
         );
       }
+
+      if (result.status === 'confirmed' && result.exceedsReservation) {
+        warnBudgetDiscrepancy({
+          reservationId,
+          model,
+          reservedCostUsd: result.reservedCostUsd,
+          actualCostUsd: result.actualCostUsd,
+          excessCostUsd: result.excessCostUsd,
+        });
+      }
     },
     consumeUnknown: async (reservationId, model) => {
       const pricing = getModelPricing(model);
+      if (!pricing) {
+        throw new BudgetServiceError(
+          'No hay precio explícito para el modelo utilizado.'
+        );
+      }
+
       const costEstimated = true;
       const actualCostUsd = calculateActualCostUsd({
         pricing,
@@ -323,6 +392,16 @@ export async function generateDescription(
         throw new BudgetServiceError(
           'No se pudo confirmar la reserva de presupuesto.'
         );
+      }
+
+      if (result.status === 'confirmed' && result.exceedsReservation) {
+        warnBudgetDiscrepancy({
+          reservationId,
+          model,
+          reservedCostUsd: result.reservedCostUsd,
+          actualCostUsd: result.actualCostUsd,
+          excessCostUsd: result.excessCostUsd,
+        });
       }
     },
     release: async (reservationId) => {
@@ -390,28 +469,50 @@ export async function generateDescription(
           );
           const model = info.model ?? providerConfig?.model ?? null;
           const pricing = model ? getModelPricing(model) : null;
-          const tokensUsed = info.result?.tokensUsed ?? null;
-          const costEstimated = tokensUsed === null;
-          const maxCost =
-            model !== null
-              ? calculateMaxCostUsd(getModelPricing(model))
-              : 0;
+          const usage = info.result?.usage ?? null;
+          const tokensInput = usage?.inputTokens ?? null;
+          const visibleOutputTokens = usage?.outputTokens ?? null;
+          const reasoningTokens = usage?.reasoningTokens ?? null;
+          const billableOutputTokens = usage
+            ? getBillableOutputTokens(usage)
+            : null;
+          const costEstimated =
+            usage === null || !hasCompleteTokenUsage(usage);
+          const maxCost = pricing ? calculateMaxCostUsd(pricing) : 0;
 
-          const estimatedCostUsd = info.success
-            ? calculateActualCostUsd({
-                pricing: pricing ?? getModelPricing('gpt-4o-mini'),
-                tokensInput: null,
-                tokensOutput: tokensUsed,
-                costEstimated,
-              })
-            : costEstimated
+          const estimatedCostUsd = pricing
+            ? info.success
               ? calculateActualCostUsd({
-                  pricing: pricing ?? getModelPricing('gpt-4o-mini'),
-                  tokensInput: null,
-                  tokensOutput: null,
-                  costEstimated: true,
+                  pricing,
+                  tokensInput,
+                  tokensOutput: billableOutputTokens,
+                  costEstimated,
                 })
-              : maxCost;
+              : costEstimated
+                ? calculateActualCostUsd({
+                    pricing,
+                    tokensInput: null,
+                    tokensOutput: null,
+                    costEstimated: true,
+                  })
+                : maxCost
+            : 0;
+
+          if (
+            info.success &&
+            pricing &&
+            billableOutputTokens !== null &&
+            billableOutputTokens > pricing.maxOutputTokens
+          ) {
+            warnOutputLimitExceeded({
+              provider: info.provider,
+              model: info.model,
+              maxOutputTokens: pricing.maxOutputTokens,
+              billableOutputTokens,
+              visibleOutputTokens,
+              reasoningTokens,
+            });
+          }
 
           try {
             await recordGeneration({
@@ -420,8 +521,8 @@ export async function generateDescription(
               success: info.success,
               provider: info.provider,
               model,
-              tokensInput: null,
-              tokensOutput: tokensUsed,
+              tokensInput,
+              tokensOutput: billableOutputTokens,
               estimatedCostUsd,
               costEstimated,
               errorCode: info.success
@@ -476,7 +577,7 @@ export async function generateDescription(
         response: {
           success: true,
           generatedText: outcome.result.text,
-          tokensUsed: outcome.result.tokensUsed,
+          tokensUsed: getPublicTotalTokens(outcome.result.usage),
         },
         status: 200,
       };

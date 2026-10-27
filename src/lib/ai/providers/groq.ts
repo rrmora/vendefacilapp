@@ -1,5 +1,7 @@
 import { buildDescriptionPrompt } from '../prompt';
 import { AIProviderError } from '../errors';
+import { createTokenUsage } from '../tokenUsage';
+import { getModelPricing } from '@/lib/budget/budgetService';
 import type {
   AIProviderCallContext,
   AIProviderGenerationRequest,
@@ -83,10 +85,13 @@ function extractText(response: GroqResponse): string {
   return (response.choices?.[0]?.message?.content ?? '').trim();
 }
 
-function extractTokens(response: GroqResponse): number | null {
-  const usage = response.usage;
-  if (!usage) return null;
-  return usage.total_tokens ?? usage.prompt_tokens ?? null;
+function extractUsage(response: GroqResponse) {
+  return createTokenUsage(
+    response.usage?.prompt_tokens,
+    response.usage?.completion_tokens,
+    response.usage?.total_tokens,
+    0
+  );
 }
 
 export class GroqProvider implements IAIProvider {
@@ -112,6 +117,16 @@ export class GroqProvider implements IAIProvider {
     const onAbort = () => controller.abort();
 
     try {
+      const pricing = getModelPricing(this.model);
+      if (!pricing) {
+        throw new AIProviderError({
+          kind: 'NOT_CONFIGURED',
+          provider: 'groq',
+          message: 'Model is not configured with an output token limit',
+          requestDispatched: false,
+        });
+      }
+
       const { systemPrompt, userContent } = buildDescriptionPrompt(request);
       const body = JSON.stringify({
         model: this.model,
@@ -119,6 +134,7 @@ export class GroqProvider implements IAIProvider {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userContent },
         ],
+        max_tokens: pricing.maxOutputTokens,
       });
 
       timeoutId = setTimeout(() => controller.abort(), context.timeoutMs);
@@ -179,7 +195,7 @@ export class GroqProvider implements IAIProvider {
         });
       }
 
-      return { text, tokensUsed: extractTokens(data) };
+      return { text, usage: extractUsage(data) };
     } catch (error) {
       if (error instanceof AIProviderError) throw error;
       if (error instanceof Error && error.name === 'AbortError') {
