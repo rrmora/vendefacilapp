@@ -24,6 +24,11 @@ const SEQUENCES = [
 ];
 const SEQUENCE_PRIVILEGES = ['USAGE', 'SELECT', 'UPDATE'];
 
+const MAINTENANCE_TABLE = 'public.maintenance_runs';
+const MAINTENANCE_SEQUENCE = 'public.maintenance_runs_id_seq';
+const MAINTENANCE_TABLE_MINIMUM = ['SELECT', 'INSERT', 'UPDATE'];
+const MAINTENANCE_SEQUENCE_MINIMUM = ['USAGE', 'SELECT'];
+
 const RPC_SIGNATURES = [
   'public.reserve_quota(uuid,date,uuid)',
   'public.confirm_quota(uuid)',
@@ -158,6 +163,20 @@ function sequencePrivileges(role: string, sequence: string): string[] {
   const privilegeList = SEQUENCE_PRIVILEGES.map((privilege) => `'${privilege}'`).join(',');
   const value = psql(
     `SELECT array_to_string(ARRAY(SELECT p FROM unnest(ARRAY[${privilegeList}]) AS p WHERE has_sequence_privilege('${role}', '${sequence}', p)), ',');`
+  );
+  return value ? value.split(',').filter(Boolean) : [];
+}
+
+function directAclPrivileges(
+  role: string,
+  object: string,
+  privilegeOrder: string[]
+): string[] {
+  const privilegeList = privilegeOrder.map((privilege) => `'${privilege}'`).join(',');
+  const granteePredicate =
+    role === 'PUBLIC' ? 'a.grantee = 0' : `pg_get_userbyid(a.grantee) = '${role}'`;
+  const value = psql(
+    `SELECT array_to_string(ARRAY(SELECT p FROM unnest(ARRAY[${privilegeList}]) AS p WHERE p = ANY(COALESCE((SELECT array_agg(a.privilege_type) FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE c.oid = '${object}'::regclass AND ${granteePredicate}), ARRAY[]::text[]))), ',');`
   );
   return value ? value.split(',').filter(Boolean) : [];
 }
@@ -345,6 +364,56 @@ describe('privilegios minimos (026) en harness con defaults de Supabase', () => 
     for (const sequence of SEQUENCES) {
       expect(sequencePrivileges('service_role', sequence)).toEqual(['USAGE']);
     }
+  });
+
+  it('service_role conserva solo SELECT, INSERT y UPDATE sobre maintenance_runs', () => {
+    expect(tablePrivileges('service_role', MAINTENANCE_TABLE)).toEqual(
+      MAINTENANCE_TABLE_MINIMUM
+    );
+  });
+
+  it('la ACL directa de service_role sobre maintenance_runs no tiene privilegios excesivos', () => {
+    expect(directAclPrivileges('service_role', MAINTENANCE_TABLE, TABLE_PRIVILEGES)).toEqual(
+      MAINTENANCE_TABLE_MINIMUM
+    );
+  });
+
+  it('service_role conserva solo USAGE y SELECT sobre maintenance_runs_id_seq', () => {
+    expect(sequencePrivileges('service_role', MAINTENANCE_SEQUENCE)).toEqual(
+      MAINTENANCE_SEQUENCE_MINIMUM
+    );
+  });
+
+  it('la ACL directa de service_role sobre maintenance_runs_id_seq no tiene privilegios excesivos', () => {
+    expect(
+      directAclPrivileges('service_role', MAINTENANCE_SEQUENCE, SEQUENCE_PRIVILEGES)
+    ).toEqual(MAINTENANCE_SEQUENCE_MINIMUM);
+  });
+
+  it('anon, authenticated y PUBLIC no tienen privilegios sobre maintenance_runs ni su secuencia', () => {
+    for (const role of ['anon', 'authenticated', PROBE_ROLE]) {
+      expect(tablePrivileges(role, MAINTENANCE_TABLE)).toEqual([]);
+      expect(sequencePrivileges(role, MAINTENANCE_SEQUENCE)).toEqual([]);
+    }
+
+    for (const role of ['anon', 'authenticated', 'PUBLIC']) {
+      expect(directAclPrivileges(role, MAINTENANCE_TABLE, TABLE_PRIVILEGES)).toEqual([]);
+      expect(directAclPrivileges(role, MAINTENANCE_SEQUENCE, SEQUENCE_PRIVILEGES)).toEqual(
+        []
+      );
+    }
+  });
+
+  it('los defaults simulados reproducen la concesion excesiva a service_role en objetos nuevos', () => {
+    const output = runSqlScript(
+      `BEGIN;
+CREATE TABLE public.vf_default_acl_probe (id BIGSERIAL PRIMARY KEY);
+SELECT has_table_privilege('service_role', 'public.vf_default_acl_probe', 'TRUNCATE');
+SELECT has_sequence_privilege('service_role', 'public.vf_default_acl_probe_id_seq', 'UPDATE');
+ROLLBACK;`
+    );
+
+    expect(output).toEqual(['t', 't']);
   });
 
   it('las RPC del backend se restringen a service_role (EXECUTE efectivo)', () => {
