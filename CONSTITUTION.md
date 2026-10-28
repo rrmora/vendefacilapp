@@ -1,18 +1,19 @@
 # CONSTITUTION — VendeFácil AI
 
-Reglas permanentes del proyecto. No se pueden modificar sin aprobación explícita del usuario.
+Las reglas permanentes del proyecto viven ahora en una sola fuente:
 
-1. Respetar las especificaciones aprobadas en `specs/`.
-2. TypeScript strict obligatorio en todo el código.
-3. Priorizar mobile-first en toda decisión de interfaz.
-4. No modificar contratos públicos sin autorización explícita.
-5. Evitar sobreingeniería: interfaces claras antes que capas innecesarias.
-6. Proteger secretos: nunca commitear claves ni exponerlas al cliente.
-7. Mantener modularidad: Presentation / API / Application / Infrastructure.
-8. Escribir pruebas para cada funcionalidad nueva.
-9. No implementar funcionalidades no aprobadas.
-10. No eliminar controles de cuota ni de presupuesto.
-11. No modificar reglas de seguridad sin aprobación.
-12. Metodología SDD: una tarea a la vez, con aprobación previa.
-13. Interfaz y mensajes al usuario en español.
-14. No exponer información interna de proveedores en respuestas públicas.
+**`02-DOCS/wiki/sdd/constitution.md`** — versión v1.0.0, ratificada el 2026-10-27.
+
+Ese documento consolida las 14 reglas originales de este archivo, los principios fijos del
+harness rsc (autoría humana de los commits, decisiones registradas) y las barras ratificadas
+de pruebas, accesibilidad, rendimiento y commits.
+
+No se duplican reglas aquí: cualquier cambio se propone como enmienda en la constitución SDD y
+se registra en su bitácora de enmiendas y en `02-DOCS/wiki/sdd/decisions.md`.
+
+| Qué | Dónde |
+|-----|-------|
+| Constitución (no negociables) | `02-DOCS/wiki/sdd/constitution.md` |
+| Decisiones | `02-DOCS/wiki/sdd/decisions.md` |
+| Estado operativo | `MEMORY.md` |
+| Especificaciones aprobadas | `specs/` |
