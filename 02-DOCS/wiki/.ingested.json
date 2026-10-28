@@ -1,0 +1,37 @@
+{
+    "specs/product/PRD.md":  {
+                                 "hash":  "sha256:3491e873ffa12938b558ca48a211d0872187fd201a9eb202fbe158b0d4fdc926",
+                                 "ingested":  "2026-10-27",
+                                 "topic":  "producto"
+                             },
+    "MEMORY.md":  {
+                      "hash":  "sha256:92628d359064be02d895ab962557dcde4129101e12ba585a69c03eb505d20178",
+                      "ingested":  "2026-10-27",
+                      "topic":  "producto"
+                  },
+    "specs/features/generate-description/spec.md":  {
+                                                        "hash":  "sha256:0c1f0efe2a830e2286ed20cf366be80cebb5a39274c496450edcd97562d8cfe8",
+                                                        "ingested":  "2026-10-27",
+                                                        "topic":  "producto"
+                                                    },
+    "specs/features/generate-description/plan.md":  {
+                                                        "hash":  "sha256:c5a27a22ff1b327f7d89f1c542a8f2576a4bf540908865826cde2928789a0d27",
+                                                        "ingested":  "2026-10-27",
+                                                        "topic":  "producto"
+                                                    },
+    "specs/features/generate-description/tasks.md":  {
+                                                         "hash":  "sha256:170435735b53f694eaa31628e4b37084e03650bd70e2dc94cd88cea4f8101334",
+                                                         "ingested":  "2026-10-27",
+                                                         "topic":  "producto"
+                                                     },
+    "specs/features/generate-description/spec-t004.md":  {
+                                                             "hash":  "sha256:f5e648bdddc034a4b7fee5b0216f1526e11f32ebdabf2af944294c2e79b3dfd7",
+                                                             "ingested":  "2026-10-27",
+                                                             "topic":  "producto"
+                                                         },
+    "CONSTITUTION.md":  {
+                            "hash":  "sha256:35b71c0c2aa18a30e31a67fe5cdb91dd42ef2e9368cc0e82bb4ea8282c224fb5",
+                            "ingested":  "2026-10-27",
+                            "topic":  "meta"
+                        }
+}

@@ -1,0 +1,113 @@
+{
+    "arquitectura/capas-y-modulos.md":  5,
+    "arquitectura/contratos-y-api.md":  13,
+    "base-de-datos/esquema-y-migraciones.md":  11,
+    "base-de-datos/privilegios-y-rls.md":  13,
+    "base-de-datos/rpc-y-mantenimiento.md":  13,
+    "calidad/estrategia-de-pruebas.md":  7,
+    "ia/prompt-y-costos.md":  7,
+    "ia/proveedores-y-fallback.md":  9,
+    "operaciones/despliegue-y-pendientes.md":  13,
+    "producto/estado-y-hoja-de-ruta.md":  8,
+    "producto/flujo-de-generacion.md":  7,
+    "producto/vision-y-alcance.md":  6,
+    "seguridad/controles-antiabuso.md":  11,
+    "seguridad/secretos-y-entornos.md":  9,
+    "stack/stack-y-configuracion.md":  7,
+    "_meta":  {
+                  "interactions_since_improve":  0,
+                  "generated":  "2026-10-27",
+                  "details":  {
+                                  "arquitectura/capas-y-modulos.md":  {
+                                                                          "inbound_links":  1,
+                                                                          "sources_count":  2,
+                                                                          "cited_count":  0,
+                                                                          "conflicts":  0
+                                                                      },
+                                  "arquitectura/contratos-y-api.md":  {
+                                                                          "inbound_links":  5,
+                                                                          "sources_count":  2,
+                                                                          "cited_count":  0,
+                                                                          "conflicts":  0
+                                                                      },
+                                  "base-de-datos/esquema-y-migraciones.md":  {
+                                                                                 "inbound_links":  4,
+                                                                                 "sources_count":  2,
+                                                                                 "cited_count":  0,
+                                                                                 "conflicts":  0
+                                                                             },
+                                  "base-de-datos/privilegios-y-rls.md":  {
+                                                                             "inbound_links":  5,
+                                                                             "sources_count":  2,
+                                                                             "cited_count":  0,
+                                                                             "conflicts":  0
+                                                                         },
+                                  "base-de-datos/rpc-y-mantenimiento.md":  {
+                                                                               "inbound_links":  5,
+                                                                               "sources_count":  2,
+                                                                               "cited_count":  0,
+                                                                               "conflicts":  0
+                                                                           },
+                                  "calidad/estrategia-de-pruebas.md":  {
+                                                                           "inbound_links":  2,
+                                                                           "sources_count":  2,
+                                                                           "cited_count":  0,
+                                                                           "conflicts":  0
+                                                                       },
+                                  "ia/prompt-y-costos.md":  {
+                                                                "inbound_links":  2,
+                                                                "sources_count":  2,
+                                                                "cited_count":  0,
+                                                                "conflicts":  0
+                                                            },
+                                  "ia/proveedores-y-fallback.md":  {
+                                                                       "inbound_links":  3,
+                                                                       "sources_count":  2,
+                                                                       "cited_count":  0,
+                                                                       "conflicts":  0
+                                                                   },
+                                  "operaciones/despliegue-y-pendientes.md":  {
+                                                                                 "inbound_links":  5,
+                                                                                 "sources_count":  2,
+                                                                                 "cited_count":  0,
+                                                                                 "conflicts":  0
+                                                                             },
+                                  "producto/estado-y-hoja-de-ruta.md":  {
+                                                                            "inbound_links":  2,
+                                                                            "sources_count":  3,
+                                                                            "cited_count":  0,
+                                                                            "conflicts":  0
+                                                                        },
+                                  "producto/flujo-de-generacion.md":  {
+                                                                          "inbound_links":  2,
+                                                                          "sources_count":  2,
+                                                                          "cited_count":  0,
+                                                                          "conflicts":  0
+                                                                      },
+                                  "producto/vision-y-alcance.md":  {
+                                                                       "inbound_links":  2,
+                                                                       "sources_count":  1,
+                                                                       "cited_count":  0,
+                                                                       "conflicts":  0
+                                                                   },
+                                  "seguridad/controles-antiabuso.md":  {
+                                                                           "inbound_links":  4,
+                                                                           "sources_count":  2,
+                                                                           "cited_count":  0,
+                                                                           "conflicts":  0
+                                                                       },
+                                  "seguridad/secretos-y-entornos.md":  {
+                                                                           "inbound_links":  3,
+                                                                           "sources_count":  2,
+                                                                           "cited_count":  0,
+                                                                           "conflicts":  0
+                                                                       },
+                                  "stack/stack-y-configuracion.md":  {
+                                                                         "inbound_links":  2,
+                                                                         "sources_count":  2,
+                                                                         "cited_count":  0,
+                                                                         "conflicts":  0
+                                                                     }
+                              }
+              }
+}
