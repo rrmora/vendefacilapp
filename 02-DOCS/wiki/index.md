@@ -17,7 +17,7 @@ Qué es el producto, cómo se usa y en qué punto del plan está.
 |---------|---------|---------|-------|
 | [Visión y alcance del producto](producto/vision-y-alcance.md) | Promesa, cuatro campos, freemium y lo que queda fuera del MVP. | 2026-10-27 | 6.0 |
 | [Flujo de generación y experiencia de usuario](producto/flujo-de-generacion.md) | Estados del formulario, copiar, regenerar y su efecto en la cuota. | 2026-10-27 | 7.0 |
-| [Estado y hoja de ruta](producto/estado-y-hoja-de-ruta.md) | Fases cerradas, llamadas reales apagadas y lo que falta para publicar. | 2026-10-27 | 8.0 |
+| [Estado y hoja de ruta](producto/estado-y-hoja-de-ruta.md) | Fases cerradas, llamadas reales apagadas y lo que falta para publicar. | 2026-10-30 | 8.0 |
 
 ## arquitectura
 
@@ -44,7 +44,7 @@ PostgreSQL como única persistencia: esquema, RPC y privilegios.
 |---------|---------|---------|-------|
 | [Esquema y migraciones](base-de-datos/esquema-y-migraciones.md) | Ocho tablas, sus invariantes y las 26 migraciones por bloques. | 2026-10-27 | 11.0 |
 | [RPC y mantenimiento](base-de-datos/rpc-y-mantenimiento.md) | Cuota, presupuesto, rate limit y `run_maintenance` con auditoría. | 2026-10-27 | 13.0 |
-| [Privilegios y RLS](base-de-datos/privilegios-y-rls.md) | Cómo 026 deja la base en manos de `service_role` y qué deuda queda. | 2026-10-27 | 13.0 |
+| [Privilegios y RLS](base-de-datos/privilegios-y-rls.md) | Cómo 026 deja la base en manos de `service_role` y qué deuda queda. | 2026-10-30 | 13.0 |
 
 ## ia
 
@@ -70,7 +70,7 @@ Cómo se verifica que lo anterior funciona.
 
 | Article | Summary | Updated | Score |
 |---------|---------|---------|-------|
-| [Estrategia de pruebas](calidad/estrategia-de-pruebas.md) | Vitest, integración con PostgreSQL real y ausencia de cobertura/CI. | 2026-10-27 | 7.0 |
+| [Estrategia de pruebas](calidad/estrategia-de-pruebas.md) | Vitest, integración con PostgreSQL real y ausencia de cobertura/CI. | 2026-10-30 | 7.0 |
 
 ## operaciones
 
@@ -78,7 +78,15 @@ Qué hace falta para publicar y qué se sabe roto.
 
 | Article | Summary | Updated | Score |
 |---------|---------|---------|-------|
-| [Despliegue y pendientes](operaciones/despliegue-y-pendientes.md) | Checklist de producción, deuda técnica e inconsistencias documentales. | 2026-10-27 | 13.0 |
+| [Despliegue y pendientes](operaciones/despliegue-y-pendientes.md) | Checklist de producción, deuda técnica e inconsistencias documentales. | 2026-10-30 | 13.0 |
+
+## reports
+
+Informes puntuales sobre el estado del proyecto.
+
+| Article | Summary | Updated | Score |
+|---------|---------|---------|-------|
+| [Pendientes de trabajo 2026-10-30](reports/pendientes-2026-10-30.md) | Gates de calidad, bloqueantes P0, pendientes P1/P2 y orden recomendado. | 2026-10-30 | - |
 
 ## sdd
 

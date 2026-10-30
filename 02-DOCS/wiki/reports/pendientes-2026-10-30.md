@@ -58,18 +58,19 @@ Los 8 archivos que fallan son los que levantan `postgres:17-alpine`:
    `SUPABASE_SERVICE_ROLE_KEY`, y `TRUST_PROXY` revisado. Si `extractClientIp` devuelve
    `null`, todas las peticiones responden 429. `TRUST_PROXY` se lee en
    `src/lib/ratelimit/rateLimiter.ts:88`. Verificado.
-5. **Privilegios de objetos nuevos.** La prueba de `9abf528` demuestra que los defaults de
-   Supabase conceden `TRUNCATE` y `UPDATE` a `service_role` sobre tablas y secuencias
-   nuevas. La 026 corrige lo existente; cada migración futura debe endurecer privilegios a
-   mano. La deuda heredada B-01/B-02/B-03 sigue abierta. Verificado (test) y heredado
-   (deuda).
+5. **Privilegios: B-02 confirmada y con prueba en rojo.** Con los defaults de Supabase,
+   `service_role` recibe `ALL` sobre tablas y secuencias nuevas. La 023 crea
+   `maintenance_runs` y no revoca ese `ALL`; la 026 no toca esa tabla, así que la prueba
+   añadida en `9abf528` debería fallar hasta corregirlo. La 026 sí corrige las cuatro tablas
+   del flujo y las 16 RPC, pero cada migración futura debe endurecer privilegios a mano. La
+   deuda B-01/B-03 sigue abierta. Verificado por lectura de 023, 026 y del arnés de
+   `privileges.test.ts`.
 
 ## P1 — cierre de fase 4
 
-- **Cierre documental y validación final de T-004:** `tasks.md` sigue diciendo que
-  T-004-8.5 y T-004-8.5b están "sin commit", pero se commitearon en `6fb3c04`
-  (2026-10-21). Ajustar la bitácora, `MEMORY.md` y `tasks.md` antes de declarar la fase
-  cerrada. Verificado contra `git log`.
+- **Documentación ya sincronizada (2026-10-30):** `MEMORY.md`, `CHANGELOG.md`, `tasks.md`,
+  `spec-t004.md` y la wiki se alinearon con el repositorio: T-004-8.5/8.5b están committeadas
+  en `6fb3c04` y en `origin/master`. Queda el cierre formal de la fase 4 (validación final).
 - **Integración sin Docker:** las suites no tienen `skip` condicional ni script aparte; sin
   Docker fallan en vez de omitirse. Conviene separar `pnpm test` de `pnpm test:integration`
   y decidir si CI usa un servicio PostgreSQL o Testcontainers.
@@ -104,12 +105,14 @@ Los 8 archivos que fallan son los que levantan `postgres:17-alpine`:
 ## Orden recomendado
 
 1. Arreglar `eslint.config.mjs` y dejar los cuatro gates en verde (P0-1).
-2. Decidir hosting; con eso se desbloquea el scheduler (P0-3 y P0-2).
-3. Completar T-004-8.6/8.7, programar mantenimiento y cerrar la fase 4 con documentación
+2. Corregir B-02 (revocar los grants excesivos sobre `maintenance_runs` y su secuencia) y
+   poner en verde la prueba de `9abf528` (P0-5).
+3. Decidir hosting; con eso se desbloquea el scheduler (P0-3 y P0-2).
+4. Completar T-004-8.6/8.7, programar mantenimiento y cerrar la fase 4 con documentación
    actualizada (P0-2 y P1).
-4. Separar la suite de integración y montar CI (P1 y P2).
-5. PWA y E2E (fase 5).
-6. Observabilidad, publicidad y despliegue (fase 6).
+5. Separar la suite de integración y montar CI (P1 y P2).
+6. PWA y E2E (fase 5).
+7. Observabilidad, publicidad y despliegue (fase 6).
 
 ## Cómo reproducir
 

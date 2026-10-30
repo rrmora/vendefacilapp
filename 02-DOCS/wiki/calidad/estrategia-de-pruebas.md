@@ -4,7 +4,7 @@ title: Estrategia de pruebas
 description: Qué cubre la suite de Vitest, cómo se prueban las RPC contra PostgreSQL real y qué falta (cobertura y CI).
 resource: tests/
 tags: [calidad, pruebas, vitest, postgresql]
-timestamp: 2026-10-27T21:40:00-06:00
+timestamp: 2026-10-30T12:30:00-06:00
 aliases: [estrategia-de-pruebas]
 topic: calidad
 status: stable
@@ -54,12 +54,14 @@ suite completa falla.
 
 ## Volumen y evidencia
 
-La bitácora reporta 434/434 pruebas tras T-004-8.5, más 12 pruebas de integración de
-privilegios añadidas en T-004-8.5b sin total global actualizado. También registra corridas
-completas de lint, typecheck y build junto a la suite.
+Estado medido el 2026-10-30 en `chore/rsc-harness`: 578 casos, de los cuales 474 pasan y 104
+quedan omitidos porque las 8 suites de integración no arrancan sin Docker. La bitácora reporta
+434/434 tras T-004-8.5, más 12 integraciones de T-004-8.5b y 6 pruebas de B-02 añadidas en
+`9abf528`; estos totales son una foto, no una garantía.
 
-Esos números son una foto, no una garantía: el total cambia con cada tanda y `MEMORY.md` no
-siempre se actualiza al mismo ritmo que el código.
+`pnpm typecheck` y `pnpm build` pasan. `pnpm lint` falla por archivos del harness en `.rsc/` y
+`.opencode/` (no por `src/`), porque `eslint.config.mjs` no los ignora. Las pruebas de B-02
+quedan en rojo hasta corregir los privilegios de `maintenance_runs`.
 
 ## Lo que no existe
 

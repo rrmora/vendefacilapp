@@ -4,7 +4,7 @@ title: Privilegios y RLS
 description: Cómo 026 reduce la superficie de la base de datos a service_role y qué deuda de privilegios queda abierta.
 resource: supabase/migrations/026_minimum_privileges.sql
 tags: [base-de-datos, seguridad, rls, privilegios]
-timestamp: 2026-10-27T21:40:00-06:00
+timestamp: 2026-10-30T12:30:00-06:00
 aliases: [privilegios-y-rls]
 topic: base-de-datos
 status: draft
@@ -63,10 +63,12 @@ grants: si `service_role` no tiene permisos sobre alguna tabla, la tarea falla c
 
 - **B-01/B-02/B-03:** en proyectos con defaults de Supabase persisten grants heredados sobre
   `budget_reservations_id_seq`, `ip_rate_limit_events_id_seq`, `maintenance_runs` e
-  `ip_rate_limits`. 026 los reduce, pero el inventario de privilegios efectivos depende del
-  entorno donde se aplique.
-- **026 sin commitear:** la bitácora la marca como validada localmente y pendiente de
-  aprobación/commit. Hasta que se aplique en producción, el estado real es el previo.
+  `ip_rate_limits`. 026 corrige las cuatro tablas del flujo y las RPC, pero no toca esos tres
+  puntos: la deuda sigue abierta y depende del entorno donde se aplique. B-02 tiene prueba de
+  detección en `9abf528` y queda en rojo hasta corregirlo.
+- **026 en el repositorio, no en producción:** la migración está committeada en `6fb3c04`
+  (2026-10-21) y ya viajó a `origin/master`. Hasta que se aplique en la base de producción,
+  el estado real de esa base es el previo.
 - **Tabla legada:** `ip_rate_limits` mantiene RLS pero no tiene escritores; sigue expuesta en
   los grants heredados aunque no se use.
 

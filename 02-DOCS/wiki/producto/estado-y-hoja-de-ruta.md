@@ -4,7 +4,7 @@ title: Estado y hoja de ruta
 description: Qué fases del MVP están cerradas, qué está validado pero no publicado y qué falta para un despliegue comercial.
 resource: MEMORY.md
 tags: [producto, roadmap, estado]
-timestamp: 2026-10-27T21:40:00-06:00
+timestamp: 2026-10-30T12:30:00-06:00
 aliases: [estado-y-hoja-de-ruta]
 topic: producto
 status: draft
@@ -21,9 +21,9 @@ score: 8
 
 El proyecto recorrió las fases 1 a 4 del PRD y se detuvo antes de la 5. La generación real
 está implementada y blindada, pero permanece apagada por variables de entorno; PWA, E2E y
-CI no existen todavía. La documentación operativa (`MEMORY.md`) va por detrás del código en
-los últimos puntos, así que este artículo separa lo verificado en el repositorio de lo que
-solo está reportado.
+CI no existen todavía. `MEMORY.md` se alineó con el repositorio el 2026-10-30, aunque sus
+totales por tarea siguen siendo históricos; este artículo separa lo verificado en el
+repositorio de lo que solo está reportado.
 
 ## Fases del PRD
 
@@ -32,7 +32,7 @@ solo está reportado.
 | 1 — Scaffolding | Next.js, TS, Tailwind, contrato, API MOCK, pruebas iniciales | Cerrada |
 | 2 — UI Mobile First | Formulario de cuatro campos, validaciones, copiar, regenerar, errores | Cerrada |
 | 3 — Integración de IA | Adaptadores Gemini/Groq/OpenAI, orquestador, fallback, prompts | Cerrada, llamadas apagadas por defecto |
-| 4 — Seguridad y cuotas | Supabase, rate limit, cuota, presupuesto, concurrencia | Cerrada en código; última migración sin commitear |
+| 4 — Seguridad y cuotas | Supabase, rate limit, cuota, presupuesto, concurrencia | Cerrada en código; falta el cierre documental y corregir B-02 |
 | 5 — PWA y calidad | Manifest, service worker, offline, accesibilidad, E2E | No iniciada |
 | 6 — Preparación comercial | Observabilidad, CI, hosting, despliegue, anuncios | No iniciada |
 
@@ -57,15 +57,18 @@ solo está reportado.
 - **CI:** no existe `.github/workflows`; lint, typecheck, pruebas y build se ejecutan a mano.
 - **Hosting:** el PRD lo deja pendiente; `README.md` asume Vercel para los scopes de
   variables.
-- **Migración 026:** validada localmente pero no commiteada, según la bitácora. La deuda
-  B-01/B-02/B-03 de privilegios heredados sigue abierta.
+- **Migración 026:** committeada en `6fb3c04` y presente en `origin/master`. La deuda
+  B-01/B-02/B-03 de privilegios heredados sigue abierta; B-02 (privilegios excesivos sobre
+  `maintenance_runs` con los defaults de Supabase) tiene prueba de detección en `9abf528` y
+  esa prueba queda en rojo hasta corregirla.
 - **Mantenimiento programado:** `run_maintenance()` existe, pero nada lo invoca en un
   horario.
 
 ## Cómo leer el estado
 
-`MEMORY.md` es la fuente narrativa más rica y también la más desfasada: sus totales de
-pruebas y su lista de pendientes se detienen antes de la última tanda. Para decisiones usa
+`MEMORY.md` es la fuente narrativa más rica. Se alineó con el repositorio el 2026-10-30
+(commits, push y estado de T-004-8.5/8.5b), pero sus totales por tarea son históricos: para el
+total vigente, usar la corrida de `pnpm test`. Para decisiones usa
 [MEMORY](../../raw/producto/bitacora-de-implementacion.md) con cautela y contrasta con el
 código; para el detalle del despliegue, [Despliegue y pendientes](../operaciones/despliegue-y-pendientes.md).
 

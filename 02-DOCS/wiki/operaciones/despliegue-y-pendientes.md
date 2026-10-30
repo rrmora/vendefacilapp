@@ -4,7 +4,7 @@ title: Despliegue y pendientes
 description: Lo que exige producción, lo que falta antes de publicar y las inconsistencias documentales que conviene corregir.
 resource: MEMORY.md
 tags: [operaciones, despliegue, deuda, vercel]
-timestamp: 2026-10-27T21:40:00-06:00
+timestamp: 2026-10-30T12:30:00-06:00
 aliases: [despliegue-y-pendientes]
 topic: operaciones
 status: draft
@@ -21,8 +21,8 @@ score: 13
 
 El código está listo para correr en modo MOCK en cualquier entorno y para llamadas reales en
 producción, pero publicar de verdad exige cuatro cosas que hoy no están cerradas: configurar
-IP/proxy, aplicar la migración 026, programar el mantenimiento y crear CI. El hosting sigue
-sin decisión formal, aunque la documentación asume Vercel.
+IP/proxy, aplicar las 26 migraciones en producción, programar el mantenimiento y crear CI. El
+hosting sigue sin decisión formal, aunque la documentación asume Vercel.
 
 ## Checklist mínimo antes de encender la IA
 
@@ -38,7 +38,9 @@ sin decisión formal, aunque la documentación asume Vercel.
 
 | Pendiente | Impacto | Evidencia |
 |-----------|---------|-----------|
-| 026 sin commitear | Privilegios heredados siguen activos en producción | Bitácora T-004-8.5 |
+| B-02: privilegios excesivos sobre `maintenance_runs` | Con los defaults de Supabase, `service_role` conserva `ALL` sobre la tabla y `SELECT/UPDATE` sobre su secuencia | Prueba de `9abf528` en `tests/integration/privileges.test.ts` (en rojo hasta corregir) |
+| Lint bloqueado por el harness | `pnpm lint` falla por archivos de `.rsc/` y `.opencode/`, no por `src/` | `eslint.config.mjs` solo ignora `.next/`, `out/`, `build/` |
+| Suite de integración atada a Docker | Sin Docker fallan 8 suites en vez de omitirse | `tests/integration/*.test.ts` |
 | Sin scheduler de mantenimiento | Reservas vencidas y eventos viejos no se consolidan solos | Solo existe `run_maintenance()` |
 | Sin CI | Lint, typecheck, pruebas y build dependen de ejecución manual | No hay `.github/workflows` |
 | Sin PWA | No hay manifest, service worker ni iconos propios | `public/` solo tiene SVG de ejemplo |
@@ -48,15 +50,12 @@ sin decisión formal, aunque la documentación asume Vercel.
 
 ## Inconsistencias documentales
 
-- **`README.md`** conserva el boilerplate de `create-next-app`. La sección de IA es útil, pero
-  la guía de arranque habla de `app/page.tsx` en la raíz y no menciona `pnpm test` ni las
-  migraciones.
 - **`supabase/README.md`** documenta el revert solo para las cinco tablas iniciales: no
   incluye `budget_reservations`, `ip_rate_limit_events` ni `maintenance_runs`.
 - **`ip_rate_limits`** sigue existiendo y con RLS, pero no tiene escritores desde 018. Leerla
   da datos obsoletos.
-- **`MEMORY.md`** se detiene antes de los últimos cambios y sus totales de pruebas quedaron
-  atrás.
+- **`MEMORY.md`** se alineó con el repositorio el 2026-10-30 (commits y push). Sus totales por
+  tarea son históricos y no suman el total vigente; para eso, usar la corrida de `pnpm test`.
 
 ## Riesgos operativos
 
